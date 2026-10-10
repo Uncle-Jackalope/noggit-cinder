@@ -2397,6 +2397,9 @@ void MapView::setupHotkeys()
   addHotkey(Qt::Key_V, MOD_none, "chunkMoverPaste"_hash);
   addHotkey(Qt::Key_X, MOD_none, "chunkMoverClear"_hash);
   addHotkey(Qt::Key_R, MOD_none, "chunkMoverRotate"_hash);
+  // Road sub-mode "Press X to exit" (ported from Noggit Azure). Shares X with the above;
+  // the texturing tool's roadCancel condition gates it to an active road session.
+  addHotkey(Qt::Key_X, MOD_none, "roadCancel"_hash);
   addHotkey(Qt::Key_F, MOD_none, "chunkMoverMirrorHorizontal"_hash);
   addHotkey(Qt::Key_F, MOD_alt, "chunkMoverMirrorVertical"_hash);
 }
@@ -3737,6 +3740,16 @@ void MapView::draw_map()
   renderParams.render_select_wmo_aabb = _render_wmo_aabb;
   renderParams.render_select_wmo_groups_bounds = _render_wmo_groups_bounds;
   renderParams.show_painted_stamp_selection = draw_parameters.show_painted_stamp_selection;
+
+  // Road sub-mode preview overlay (ported from Noggit Azure).
+  renderParams.road_preview_centerline = draw_parameters.road_preview_centerline;
+  renderParams.road_preview_left_edge = draw_parameters.road_preview_left_edge;
+  renderParams.road_preview_right_edge = draw_parameters.road_preview_right_edge;
+  renderParams.road_preview_blocked = draw_parameters.road_preview_blocked;
+  renderParams.road_reference_centerline = draw_parameters.road_reference_centerline;
+  renderParams.road_reference_left_edge = draw_parameters.road_reference_left_edge;
+  renderParams.road_reference_right_edge = draw_parameters.road_reference_right_edge;
+  renderParams.road_reference_mask_lines = draw_parameters.road_reference_mask_lines;
 
   _world->renderer()->draw (
                   _model_view

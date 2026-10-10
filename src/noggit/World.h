@@ -9,6 +9,7 @@
 #include <noggit/world_tile_update_queue.hpp>
 #include <noggit/world_model_instances_storage.hpp>
 #include <noggit/ContextObject.hpp>
+#include <noggit/RoadStyle.hpp>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -226,6 +227,21 @@ public:
   bool paintTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture);
   bool stampTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture, QImage* img, bool paint);
   bool sprayTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, float spraySize, float sprayPressure, scoped_blp_texture_reference texture);
+  // Road tool (ported from Noggit Azure): bake / preflight a textured road across chunks.
+  road_paint_result paintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                     sampled_road_style const& style, float width_scale = 1.0f,
+                                     float opacity_scale = 1.0f,
+                                     bool replace_conflicting_textures = false);
+  road_paint_result paintRoadPath(std::vector<glm::vec3> const& points,
+                                  sampled_road_style const& style, float width_scale = 1.0f,
+                                  float opacity_scale = 1.0f,
+                                  bool replace_conflicting_textures = false);
+  bool canPaintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                           sampled_road_style const& style, float width_scale = 1.0f,
+                           bool replace_conflicting_textures = false);
+  bool canPaintRoadPath(std::vector<glm::vec3> const& points,
+                        sampled_road_style const& style, float width_scale = 1.0f,
+                        bool replace_conflicting_textures = false);
   bool replaceTexture(glm::vec3 const& pos, float radius, scoped_blp_texture_reference const& old_texture, scoped_blp_texture_reference new_texture, bool entire_chunk = false, bool entire_tile = false);
 
   void eraseTextures(glm::vec3 const& pos);

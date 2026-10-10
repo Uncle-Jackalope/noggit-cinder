@@ -4,6 +4,7 @@
 
 #include <noggit/Alphamap.hpp>
 #include <noggit/ContextObject.hpp>
+#include <noggit/RoadStyle.hpp>
 #include <noggit/TextureManager.h>
 
 #include <cstdint>
@@ -51,6 +52,16 @@ struct chunk_mover_texture_preview
   std::array<std::uint32_t, 4> flags{};
 };
 
+// Road-tool reference sampling (ported from Noggit Azure): the dominant painted
+// texture under a point, with an estimated road radius/hardness and confidence.
+struct sampled_painted_texture
+{
+  scoped_blp_texture_reference texture;
+  float brush_radius;
+  float brush_hardness;
+  float confidence;
+};
+
 class TextureSet
 {
 public:
@@ -81,6 +92,19 @@ public:
                       , bool entire_chunk = false
                       );
   bool canPaintTexture(scoped_blp_texture_reference const& texture);
+
+  // Road tool (ported from Noggit Azure). Reference sampling + the width/opacity
+  // scaled, optionally texture-replacing road bake across this chunk's alphamap.
+  [[nodiscard]] std::optional<sampled_painted_texture> samplePaintedTexture(float world_x, float world_z) const;
+  [[nodiscard]] std::vector<sampled_texture_layer> sampleTextureLayersAt(float world_x, float world_z) const;
+  [[nodiscard]] bool canApplyRoadStyle(sampled_road_style const& style,
+                                       bool replace_conflicting_textures = false) const;
+  road_paint_result paintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                     sampled_road_style const& style, float width_scale,
+                                     float opacity_scale, bool replace_conflicting_textures);
+  road_paint_result paintRoadPath(std::vector<glm::vec3> const& points,
+                                  sampled_road_style const& style, float width_scale,
+                                  float opacity_scale, bool replace_conflicting_textures);
 
   const std::string& filename(size_t id);
 
@@ -150,6 +174,11 @@ public:
   void updateDoodadMapping();
 
 private:
+
+  // Road tool (ported from Noggit Azure): non-road layers eligible for conversion
+  // when a destination chunk's four-slot palette cannot hold the whole road style.
+  [[nodiscard]] std::vector<std::size_t> replaceable_road_layers(
+    sampled_road_style const& style) const;
 
   uint8_t sum_alpha(size_t offset) const;
 

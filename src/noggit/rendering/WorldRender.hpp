@@ -78,6 +78,17 @@ struct WorldRenderParams
   bool render_select_m2_collission_bbox;
   bool render_select_wmo_aabb;
   bool render_select_wmo_groups_bounds;
+
+  // Road sub-mode viewport preview (ported from Noggit Azure): the baked route and the
+  // blue reference-selection overlay, drawn as translucent lines over the terrain.
+  std::vector<glm::vec3> road_preview_centerline;
+  std::vector<glm::vec3> road_preview_left_edge;
+  std::vector<glm::vec3> road_preview_right_edge;
+  bool road_preview_blocked = false;
+  std::vector<glm::vec3> road_reference_centerline;
+  std::vector<glm::vec3> road_reference_left_edge;
+  std::vector<glm::vec3> road_reference_right_edge;
+  std::vector<std::vector<glm::vec3>> road_reference_mask_lines;
 };
 
 namespace Noggit::Rendering

@@ -25,10 +25,14 @@
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
+#include <QtWidgets/QFrame>
 #include <QtWidgets/QGroupBox>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
+#include <QtWidgets/QVBoxLayout>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -318,9 +322,102 @@ namespace Noggit
       auto overbright_cb = new CheckBox("Overbright", &_overbright_prop, anim_widget);
       anim_layout->addRow(overbright_cb);
 
+      // Road sub-mode panel (ported from Noggit Azure).
+      auto* road_widget = new QWidget(this);
+      auto* road_layout = new QVBoxLayout(road_widget);
+      road_layout->setAlignment(Qt::AlignTop);
+      auto* road_instructions = new QLabel(
+        "1. Size the reference brush, then paint blue over only the road and dirt.\n"
+        "2. Ctrl+paint erases. Choose OK to capture its materials and edge blend.\n"
+        "3. Click anywhere to place a new road start.\n"
+        "4. Shift+click route points, then commit. Press X to exit.", road_widget);
+      road_instructions->setWordWrap(true);
+      road_layout->addWidget(road_instructions);
+
+      _road_status_label = new QLabel("No road style sampled", road_widget);
+      _road_status_label->setWordWrap(true);
+      _road_status_label->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
+      road_layout->addWidget(_road_status_label);
+
+      _road_reference_radius_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(road_widget);
+      _road_reference_radius_slider->setPrefix("Reference brush radius: ");
+      _road_reference_radius_slider->setRange(0.5, 32.0);
+      _road_reference_radius_slider->setDecimals(2);
+      _road_reference_radius_slider->setSingleStep(0.25);
+      _road_reference_radius_slider->setValue(6.0);
+      _road_reference_radius_slider->setToolTip(
+        "Controls only the blue reference-selection brush. Road materials and their "
+        "full dirt-to-terrain fade are detected automatically beyond this corridor. "
+        "Use the buttons, the normal radius hotkeys, or Alt+mouse wheel while selecting.");
+      road_layout->addWidget(_road_reference_radius_slider);
+
+      auto* road_reference_size_buttons = new QHBoxLayout;
+      auto* road_reference_smaller = new QPushButton("- Smaller", road_widget);
+      auto* road_reference_larger = new QPushButton("+ Larger", road_widget);
+      road_reference_size_buttons->addWidget(road_reference_smaller);
+      road_reference_size_buttons->addWidget(road_reference_larger);
+      road_layout->addLayout(road_reference_size_buttons);
+      connect(road_reference_smaller, &QPushButton::clicked, this,
+        [this]() { change_radius(-0.5f); });
+      connect(road_reference_larger, &QPushButton::clicked, this,
+        [this]() { change_radius(0.5f); });
+      connect(_road_reference_radius_slider,
+        &Noggit::Ui::Tools::UiCommon::ExtendedSlider::valueChanged, this,
+        [this](double) { _map_view->invalidate(); });
+
+      _road_width_scale_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(road_widget);
+      _road_width_scale_slider->setPrefix("Width scale: ");
+      _road_width_scale_slider->setRange(0.25, 3.0);
+      _road_width_scale_slider->setDecimals(2);
+      _road_width_scale_slider->setSingleStep(0.05);
+      _road_width_scale_slider->setValue(1.0);
+      road_layout->addWidget(_road_width_scale_slider);
+
+      _road_opacity_scale_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(road_widget);
+      _road_opacity_scale_slider->setPrefix("Opacity scale: ");
+      _road_opacity_scale_slider->setRange(0.1, 1.0);
+      _road_opacity_scale_slider->setDecimals(2);
+      _road_opacity_scale_slider->setSingleStep(0.05);
+      _road_opacity_scale_slider->setValue(1.0);
+      road_layout->addWidget(_road_opacity_scale_slider);
+
+      _road_replace_conflicting_textures_cb = new QCheckBox(
+        "Replace conflicting texture layers", road_widget);
+      _road_replace_conflicting_textures_cb->setChecked(false);
+      _road_replace_conflicting_textures_cb->setToolTip(
+        "Allows the complete captured road through four-texture chunks. When slots are "
+        "required, the non-road layers with the least use outside the route and along "
+        "chunk borders are converted into the retained local terrain mixture. This can "
+        "change surrounding terrain inside affected chunks; the operation is undoable.");
+      road_layout->addWidget(_road_replace_conflicting_textures_cb);
+
+      auto* road_reference_buttons = new QHBoxLayout;
+      auto* road_select_reference = new QPushButton("Select Reference", road_widget);
+      auto* road_use_reference = new QPushButton("OK - Use Selection", road_widget);
+      road_reference_buttons->addWidget(road_select_reference);
+      road_reference_buttons->addWidget(road_use_reference);
+      road_layout->addLayout(road_reference_buttons);
+
+      auto* road_buttons = new QHBoxLayout;
+      auto* road_commit = new QPushButton("Commit Road", road_widget);
+      auto* road_clear = new QPushButton("Reset Route", road_widget);
+      auto* road_cancel = new QPushButton("Exit Road", road_widget);
+      road_buttons->addWidget(road_commit);
+      road_buttons->addWidget(road_clear);
+      road_buttons->addWidget(road_cancel);
+      road_layout->addLayout(road_buttons);
+      connect(road_select_reference, &QPushButton::clicked, this,
+        &texturing_tool::roadReferenceSelectionRequested);
+      connect(road_use_reference, &QPushButton::clicked, this,
+        &texturing_tool::roadReferenceAccepted);
+      connect(road_commit, &QPushButton::clicked, this, &texturing_tool::roadCommitRequested);
+      connect(road_clear, &QPushButton::clicked, this, &texturing_tool::roadClearRequested);
+      connect(road_cancel, &QPushButton::clicked, this, &texturing_tool::roadCancelRequested);
+
       tabs->addTab(tool_widget, "Paint");
       tabs->addTab(_texture_switcher, "Swap");
       tabs->addTab(anim_widget, "Anim");
+      tabs->addTab(road_widget, "Road");
       tabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
       
       layout->addWidget(tabs);
@@ -367,6 +464,7 @@ namespace Noggit
                     case 0: _texturing_mode = texturing_mode::paint; break;
                     case 1: _texturing_mode = texturing_mode::swap; break;
                     case 2: _texturing_mode = texturing_mode::anim; break;
+                    case 3: _texturing_mode = texturing_mode::road; break;
                   }
                 }
               );
@@ -606,6 +704,30 @@ namespace Noggit
       _hardness_slider->setValue(hardness);
     }
 
+    // Road tool status-label updates (ported from Noggit Azure).
+    void texturing_tool::applyRoadSample(float radius, float confidence, std::size_t material_count,
+                                         std::string const& direction_description)
+    {
+      _road_status_label->setText(QString("Captured %1 material(s)\nWidth: %2\nDirection: %3\nConfidence: %4%")
+        .arg(material_count)
+        .arg(radius * 2.0f, 0, 'f', 1)
+        .arg(QString::fromStdString(direction_description))
+        .arg(confidence * 100.0f, 0, 'f', 0));
+    }
+
+    void texturing_tool::showRoadReferenceSelectionStatus(std::size_t point_count)
+    {
+      _road_status_label->setText(QString("Painting road reference\nPainted mask cells: %1\n"
+        "Brush radius: %2\nPaint over the road, Ctrl+paint to erase, then choose OK.")
+        .arg(point_count)
+        .arg(roadReferenceRadius(), 0, 'f', 2));
+    }
+
+    void texturing_tool::clearRoadSampleStatus()
+    {
+      _road_status_label->setText("No road reference selected");
+    }
+
     void texturing_tool::change_radius(float change)
     {
       if (_texturing_mode == texturing_mode::paint)
@@ -619,6 +741,11 @@ namespace Noggit
       else if (_texturing_mode == texturing_mode::ground_effect)
       {
         _ground_effect_tool->change_radius(change);
+      }
+      else if (_texturing_mode == texturing_mode::road)
+      {
+        _road_reference_radius_slider->setValue(
+          static_cast<float>(_road_reference_radius_slider->value()) + change);
       }
     }
 
@@ -713,6 +840,7 @@ namespace Noggit
         case texturing_mode::paint: return static_cast<float>(_radius_slider->value());
         case texturing_mode::swap: return (_texture_switcher->brush_mode() ? _texture_switcher->radius() : 0.f);
         case texturing_mode::ground_effect: return (_ground_effect_tool->brush_mode() != ground_effect_brush_mode::none ? _ground_effect_tool->radius() : 0.f);
+        case texturing_mode::road: return static_cast<float>(_radius_slider->value()) * roadWidthScale();
         default: return 0.f;
       }
     }
@@ -729,6 +857,32 @@ namespace Noggit
     bool texturing_tool::show_unpaintable_chunks() const
     {
         return _show_unpaintable_chunks && getTexturingMode() == texturing_mode::paint;
+    }
+
+    // Road tool accessors (ported from Noggit Azure).
+    bool texturing_tool::roadModeEnabled() const
+    {
+      return getTexturingMode() == texturing_mode::road;
+    }
+
+    float texturing_tool::roadReferenceRadius() const
+    {
+      return static_cast<float>(_road_reference_radius_slider->value());
+    }
+
+    float texturing_tool::roadWidthScale() const
+    {
+      return static_cast<float>(_road_width_scale_slider->value());
+    }
+
+    float texturing_tool::roadOpacityScale() const
+    {
+      return static_cast<float>(_road_opacity_scale_slider->value());
+    }
+
+    bool texturing_tool::roadReplaceConflictingTextures() const
+    {
+      return _road_replace_conflicting_textures_cb->isChecked();
     }
 
     void texturing_tool::paint (World* world, glm::vec3 const& pos, float dt, scoped_blp_texture_reference texture)

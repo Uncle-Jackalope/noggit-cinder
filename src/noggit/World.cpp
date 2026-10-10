@@ -1742,6 +1742,158 @@ bool World::paintTexture(glm::vec3 const& pos, Brush* brush, float strength, flo
     );
 }
 
+namespace
+{
+  bool road_segment_may_touch_chunk(MapChunk const* chunk, glm::vec3 const& from,
+                                    glm::vec3 const& to, float half_width)
+  {
+    float const min_x = std::min(from.x, to.x) - half_width;
+    float const max_x = std::max(from.x, to.x) + half_width;
+    float const min_z = std::min(from.z, to.z) - half_width;
+    float const max_z = std::max(from.z, to.z) + half_width;
+    return !(max_x < chunk->xbase || min_x > chunk->xbase + CHUNKSIZE
+             || max_z < chunk->zbase || min_z > chunk->zbase + CHUNKSIZE);
+  }
+}
+
+bool World::canPaintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                sampled_road_style const& style, float width_scale,
+                                bool replace_conflicting_textures)
+{
+  bool can_paint = true;
+  glm::vec3 const midpoint = (from + to) * 0.5f;
+  float const half_width = std::max(TEXDETAILSIZE, style.half_width * width_scale);
+  float const search_radius = glm::distance(glm::vec2(from.x, from.z), glm::vec2(to.x, to.z)) * 0.5f
+    + half_width;
+
+  for_all_chunks_in_rect(midpoint, search_radius, [&](MapChunk* chunk)
+  {
+    if (road_segment_may_touch_chunk(chunk, from, to, half_width)
+        && !chunk->getTextureSet()->canApplyRoadStyle(style, replace_conflicting_textures))
+    {
+      can_paint = false;
+    }
+    return false;
+  });
+  return can_paint;
+}
+
+bool World::canPaintRoadPath(std::vector<glm::vec3> const& points,
+                             sampled_road_style const& style, float width_scale,
+                             bool replace_conflicting_textures)
+{
+  if (points.size() < 2)
+  {
+    return false;
+  }
+  for (std::size_t index = 0; index + 1 < points.size(); ++index)
+  {
+    if (!canPaintRoadSegment(points[index], points[index + 1], style, width_scale,
+        replace_conflicting_textures))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+road_paint_result World::paintRoadSegment(glm::vec3 const& from, glm::vec3 const& to,
+                                          sampled_road_style const& style,
+                                          float width_scale, float opacity_scale,
+                                          bool replace_conflicting_textures)
+{
+  road_paint_result combined;
+  if (!canPaintRoadSegment(from, to, style, width_scale, replace_conflicting_textures))
+  {
+    combined.blocked_by_texture_limit = true;
+    return combined;
+  }
+
+  glm::vec3 const midpoint = (from + to) * 0.5f;
+  float const half_width = std::max(TEXDETAILSIZE, style.half_width * width_scale);
+  float const search_radius = glm::distance(glm::vec2(from.x, from.z), glm::vec2(to.x, to.z)) * 0.5f
+    + half_width;
+  for_all_chunks_in_rect(midpoint, search_radius, [&](MapChunk* chunk)
+  {
+    if (!road_segment_may_touch_chunk(chunk, from, to, half_width))
+    {
+      return false;
+    }
+    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+    road_paint_result const result = chunk->getTextureSet()->paintRoadSegment(
+      from, to, style, width_scale, opacity_scale, replace_conflicting_textures);
+    combined.changed |= result.changed;
+    combined.blocked_by_texture_limit |= result.blocked_by_texture_limit;
+    combined.replaced_texture_layers += result.replaced_texture_layers;
+    return result.changed;
+  });
+  return combined;
+}
+
+road_paint_result World::paintRoadPath(std::vector<glm::vec3> const& points,
+                                       sampled_road_style const& style,
+                                       float width_scale, float opacity_scale,
+                                       bool replace_conflicting_textures)
+{
+  road_paint_result combined;
+  if (points.size() < 2 || !canPaintRoadPath(points, style, width_scale,
+      replace_conflicting_textures))
+  {
+    combined.blocked_by_texture_limit = true;
+    return combined;
+  }
+
+  float min_x = points.front().x;
+  float max_x = points.front().x;
+  float min_z = points.front().z;
+  float max_z = points.front().z;
+  for (glm::vec3 const& point : points)
+  {
+    min_x = std::min(min_x, point.x);
+    max_x = std::max(max_x, point.x);
+    min_z = std::min(min_z, point.z);
+    max_z = std::max(max_z, point.z);
+  }
+  float const half_width = std::max(TEXDETAILSIZE, style.half_width * width_scale);
+  glm::vec3 const midpoint{(min_x + max_x) * 0.5f, points.front().y, (min_z + max_z) * 0.5f};
+  float const search_radius = glm::length(glm::vec2{max_x - min_x, max_z - min_z}) * 0.5f
+    + half_width;
+  min_x -= half_width;
+  max_x += half_width;
+  min_z -= half_width;
+  max_z += half_width;
+
+  for_all_chunks_in_rect(midpoint, search_radius, [&](MapChunk* chunk)
+  {
+    if (max_x < chunk->xbase || min_x > chunk->xbase + CHUNKSIZE
+        || max_z < chunk->zbase || min_z > chunk->zbase + CHUNKSIZE)
+    {
+      return false;
+    }
+    bool path_may_touch_chunk = false;
+    for (std::size_t index = 0; index + 1 < points.size(); ++index)
+    {
+      if (road_segment_may_touch_chunk(chunk, points[index], points[index + 1], half_width))
+      {
+        path_may_touch_chunk = true;
+        break;
+      }
+    }
+    if (!path_may_touch_chunk)
+    {
+      return false;
+    }
+    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+    road_paint_result const result = chunk->getTextureSet()->paintRoadPath(
+      points, style, width_scale, opacity_scale, replace_conflicting_textures);
+    combined.changed |= result.changed;
+    combined.blocked_by_texture_limit |= result.blocked_by_texture_limit;
+    combined.replaced_texture_layers += result.replaced_texture_layers;
+    return result.changed;
+  });
+  return combined;
+}
+
 bool World::stampTexture(glm::vec3 const& pos, Brush *brush, float strength, float pressure, scoped_blp_texture_reference texture, QImage* img, bool paint)
 {
   ZoneScoped;

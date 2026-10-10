@@ -1364,7 +1364,60 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   gl.enable(GL_BLEND);
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  // render before the water and enable depth right 
+  // Road sub-mode viewport preview (ported from Noggit Azure).
+  if (render_settings.road_preview_centerline.size() >= 2)
+  {
+    glm::vec4 const center_color = render_settings.road_preview_blocked
+      ? glm::vec4(1.0f, 0.1f, 0.1f, 1.0f)
+      : glm::vec4(1.0f, 0.82f, 0.12f, 1.0f);
+    glm::vec4 const edge_color = render_settings.road_preview_blocked
+      ? glm::vec4(1.0f, 0.15f, 0.15f, 0.9f)
+      : glm::vec4(0.15f, 1.0f, 0.35f, 0.9f);
+    _line_render.draw(mvp, render_settings.road_preview_centerline, center_color, false);
+    _line_render.draw(mvp, render_settings.road_preview_left_edge, edge_color, false);
+    _line_render.draw(mvp, render_settings.road_preview_right_edge, edge_color, false);
+  }
+
+  if (!render_settings.road_reference_mask_lines.empty())
+  {
+    glm::vec4 const mask_color{0.03f, 0.16f, 1.0f, 0.58f};
+    for (std::vector<glm::vec3> const& mask_line : render_settings.road_reference_mask_lines)
+    {
+      _line_render.draw(mvp, mask_line, mask_color, false);
+    }
+  }
+
+  if (!render_settings.road_reference_centerline.empty())
+  {
+    glm::vec4 const selection_color{0.08f, 0.35f, 1.0f, 1.0f};
+    glm::vec4 const selection_edge_color{0.05f, 0.2f, 1.0f, 0.95f};
+    if (render_settings.road_reference_left_edge.size()
+          == render_settings.road_reference_right_edge.size()
+        && render_settings.road_reference_left_edge.size() >= 2)
+    {
+      std::vector<glm::vec3> selection_band;
+      selection_band.reserve(render_settings.road_reference_left_edge.size());
+      // Closely spaced translucent strips read as a painted selection mask
+      // while keeping the overlay viewport-only and independent of ADT data.
+      for (int stripe = 1; stripe < 32; ++stripe)
+      {
+        selection_band.clear();
+        float const fraction = static_cast<float>(stripe) / 32.0f;
+        for (std::size_t index = 0;
+             index < render_settings.road_reference_left_edge.size(); ++index)
+        {
+          selection_band.push_back(render_settings.road_reference_left_edge[index]
+            * (1.0f - fraction) + render_settings.road_reference_right_edge[index] * fraction);
+        }
+        _line_render.draw(mvp, selection_band, glm::vec4(0.03f, 0.12f, 1.0f, 0.5f), false);
+      }
+    }
+    _line_render.draw(mvp, render_settings.road_reference_centerline, selection_color, false);
+    _line_render.draw(mvp, render_settings.road_reference_left_edge, selection_edge_color, false);
+    _line_render.draw(mvp, render_settings.road_reference_right_edge, selection_edge_color, false);
+  }
+
+  // render before the water and enable depth right
   // so it's visible under water
   // the checker board pattern is used to see the water under it
   if (render_settings.angled_mode || render_settings.use_ref_pos)

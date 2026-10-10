@@ -17,6 +17,7 @@ class MapView;
 class QCheckBox;
 class QDoubleSpinBox;
 class QGroupBox;
+class QLabel;
 class QPushButton;
 class QSpinBox;
 class QTabWidget;
@@ -55,6 +56,7 @@ namespace Noggit
       paint,
       swap,
       anim,
+      road,
       ground_effect
     };
 
@@ -85,6 +87,12 @@ namespace Noggit
 
       float brush_radius() const;
       float hardness() const;
+      // Road tool (ported from Noggit Azure).
+      bool roadModeEnabled() const;
+      float roadReferenceRadius() const;
+      float roadWidthScale() const;
+      float roadOpacityScale() const;
+      bool roadReplaceConflictingTextures() const;
       bool show_unpaintable_chunks() const;
 
       void set_brush_level (float level);
@@ -96,6 +104,11 @@ namespace Noggit
       void change_radius (float change);
       void setRadius(float radius);
       void setHardness(float hardness);
+      // Road tool status-label updates (ported from Noggit Azure).
+      void applyRoadSample(float radius, float confidence, std::size_t material_count,
+                           std::string const& direction_description);
+      void showRoadReferenceSelectionStatus(std::size_t point_count);
+      void clearRoadSampleStatus();
       void change_hardness (float change);
       void change_pressure (float change);
       void change_brush_level (float change);
@@ -134,6 +147,12 @@ namespace Noggit
       texture_heightmapping_data& getCurrentHeightMappingSetting();
     signals:
       void texturePaletteToggled();
+      // Road tool (ported from Noggit Azure).
+      void roadCommitRequested();
+      void roadClearRequested();
+      void roadReferenceSelectionRequested();
+      void roadReferenceAccepted();
+      void roadCancelRequested();
 
     private:
       void change_tex_flags(World* world, glm::vec3 const& pos, bool add, scoped_blp_texture_reference texture);
@@ -171,6 +190,13 @@ namespace Noggit
       QSpinBox* _brush_level_spin;
 
       QCheckBox* _show_unpaintable_chunks_cb;
+
+      // Road tool controls (ported from Noggit Azure).
+      QLabel* _road_status_label;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_reference_radius_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_width_scale_slider;
+      Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_opacity_scale_slider;
+      QCheckBox* _road_replace_conflicting_textures_cb;
 
       QGroupBox* _spray_mode_group;
       QWidget* _spray_content;
