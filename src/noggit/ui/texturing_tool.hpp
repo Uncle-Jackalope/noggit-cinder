@@ -14,6 +14,7 @@
 class World;
 class MapView;
 
+class QButtonGroup;
 class QCheckBox;
 class QDoubleSpinBox;
 class QGroupBox;
@@ -72,9 +73,9 @@ namespace Noggit
     {
         Q_OBJECT
     public:
-      // Brush shape for the BrushStack. Square-brush texture painting (Azure) isn't wired into
-      // Cinder's paint math yet, so this reports CIRCLE for now. TODO: shape toggle + square paint.
-      BrushShape brushShape() const { return BrushShape::CIRCLE; }
+      // Brush shape for the BrushStack / paint math (square-brush port from Noggit Azure).
+      // Returns the user-selected shape from the panel's Circle/Square toggle.
+      BrushShape brushShape() const;
 
       texturing_tool ( const glm::vec3* camera_pos
                      , MapView* map_view
@@ -159,6 +160,8 @@ namespace Noggit
 
       // slider functions
       void update_brush_hardness();
+      // Square-brush port (Noggit Azure): applies the selected shape to all three brushes.
+      void set_brush_shape(BrushShape shape);
       void set_radius (float radius);
       void update_spray_brush();
 
@@ -197,6 +200,8 @@ namespace Noggit
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_width_scale_slider;
       Noggit::Ui::Tools::UiCommon::ExtendedSlider* _road_opacity_scale_slider;
       QCheckBox* _road_replace_conflicting_textures_cb;
+      // Square-brush port (Noggit Azure): Circle/Square radio toggle for the paint brush.
+      QButtonGroup* _brush_shape_group;
 
       QGroupBox* _spray_mode_group;
       QWidget* _spray_content;

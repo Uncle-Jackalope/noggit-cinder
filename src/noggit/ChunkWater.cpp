@@ -412,8 +412,52 @@ void ChunkWater::paintLiquid( glm::vec3 const& pos
                             , bool override_liquid_id
                             , MapChunk* chunk
                             , float opacity_factor
+                            , int target_layer
+                            , std::uint64_t surface_token
                             )
 {
+  // Explicit surface editing (Azure port). A selected MH2O layer is independent of
+  // its liquid ID and height, which allows stacked or millimetres-apart surfaces.
+  // The legacy liquid-ID brush below is reached only when target_layer < 0, so all
+  // existing callers (default target_layer = -1) keep their exact behaviour.
+  if (target_layer >= 0)
+  {
+    int effective_layer = resolve_layer(target_layer, surface_token);
+
+    if (!add)
+    {
+      if (effective_layer >= 0 && effective_layer < static_cast<int>(_layers.size()))
+        _layers[effective_layer].paintLiquid(pos, radius, false, angle, orientation, lock, origin,
+                                             false, chunk, opacity_factor);
+
+      cleanup();
+      update_layers();
+      return;
+    }
+
+    if (effective_layer < 0 || effective_layer >= static_cast<int>(_layers.size()))
+    {
+      liquid_layer layer(this, glm::vec3(xbase, 0.0f, zbase), lock ? origin.y : pos.y + 1.0f,
+                         liquid_id);
+      layer.paintLiquid(pos, radius, true, angle, orientation, lock, origin, true, chunk,
+                        opacity_factor);
+      layer.setSurfaceToken(surface_token);
+      _water_tile->tagUpdate();
+      _layers.push_back(std::move(layer));
+    }
+    else
+    {
+      liquid_layer& layer = _layers[effective_layer];
+      if (override_liquid_id && layer.liquidID() != liquid_id)
+        layer.changeLiquidID(liquid_id);
+      layer.paintLiquid(pos, radius, true, angle, orientation, lock, origin, override_height,
+                        chunk, opacity_factor);
+    }
+
+    update_layers();
+    return;
+  }
+
   if (override_liquid_id && !override_height)
   {
     bool layer_found = false;
@@ -479,6 +523,42 @@ void ChunkWater::paintLiquid( glm::vec3 const& pos
   update_layers();
 }
 
+void ChunkWater::paintDepth(glm::vec3 const& pos, float radius, float depth, int target_layer,
+                            std::uint64_t surface_token)
+{
+  int const layer = resolve_layer(target_layer, surface_token);
+  if (layer < 0 || layer >= static_cast<int>(_layers.size()))
+    return;
+
+  _layers[layer].paintDepth(pos, radius, depth);
+  _water_tile->tagUpdate();
+  update_layers();
+}
+
+void ChunkWater::projectUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation,
+                           int target_layer, std::uint64_t surface_token)
+{
+  int const layer = resolve_layer(target_layer, surface_token);
+  if (layer < 0 || layer >= static_cast<int>(_layers.size()))
+    return;
+
+  _layers[layer].projectUV(pos, radius, scale, rotation);
+  _water_tile->tagUpdate();
+  update_layers();
+}
+
+int ChunkWater::resolve_layer(int target_layer, std::uint64_t surface_token) const
+{
+  if (!surface_token)
+    return target_layer;
+
+  for (int i = 0; i < static_cast<int>(_layers.size()); ++i)
+    if (_layers[i].surfaceToken() == surface_token)
+      return i;
+
+  return -1;
+}
+
 MapChunk* ChunkWater::getChunk()
 {
   return _chunk;
@@ -497,6 +577,150 @@ MH2O_Attributes const&  ChunkWater::getAttributes() const
 MH2O_Attributes& ChunkWater::getAttributes()
 {
   return attributes;
+}
+
+ChunkWaterState ChunkWater::getState() const
+{
+  return {_layers, attributes, _auto_update_attributes};
+}
+
+void ChunkWater::restoreState(ChunkWaterState const& state)
+{
+  _layers = state.layers;
+  attributes = state.attributes;
+
+  // Rebuild render/extents data without replacing the restored masks.
+  _auto_update_attributes = false;
+  update_layers();
+  _auto_update_attributes = state.auto_update_attributes;
+  tagUpdate();
+}
+
+bool ChunkWater::paintAttribute(glm::vec3 const& pos, float radius, LiquidAttribute attribute,
+                                bool value, int target_layer,
+                                std::uint64_t surface_token)
+{
+  int resolved_layer = -1;
+  if (target_layer >= 0)
+  {
+    resolved_layer = resolve_layer(target_layer, surface_token);
+    if (resolved_layer < 0 || resolved_layer >= static_cast<int>(_layers.size()))
+      return false;
+  }
+
+  std::uint64_t& mask = attribute == LiquidAttribute::Fishable
+                      ? attributes.fishable : attributes.fatigue;
+  bool changed = false;
+
+  for (int z = 0; z < 8; ++z)
+    for (int x = 0; x < 8; ++x)
+    {
+      if (misc::getShortestDist(pos.x, pos.z, xbase + x * UNITSIZE,
+                                zbase + z * UNITSIZE, UNITSIZE) > radius)
+        continue;
+
+      bool has_liquid = false;
+      if (resolved_layer >= 0)
+        has_liquid = _layers[resolved_layer].hasSubchunk(x, z);
+      else
+        for (liquid_layer const& layer : _layers)
+          if (layer.hasSubchunk(x, z))
+          {
+            has_liquid = true;
+            break;
+          }
+
+      if (!has_liquid)
+        continue;
+
+      std::uint64_t const bit = std::uint64_t{1} << (z * 8 + x);
+      bool const old_value = (mask & bit) != 0;
+      if (old_value != value)
+      {
+        misc::set_bit(mask, x, z, value);
+        changed = true;
+      }
+    }
+
+  if (changed)
+  {
+    // Authored masks: stop update_layers() re-deriving them and drop the ocean
+    // fatigue optimisation so partial fatigue edits survive in memory.
+    // NOTE(azure-port): the frozen MCLQ/MH2O save paths still call
+    // update_attributes() unconditionally, so these masks do NOT persist to disk
+    // until save gates that call on _auto_update_attributes -- see report.
+    _auto_update_attributes = false;
+    for (liquid_layer& layer : _layers)
+      layer.disableFatigueOptimization();
+    tagUpdate();
+  }
+  return changed;
+}
+
+bool ChunkWater::clearAttribute(LiquidAttribute attribute)
+{
+  std::uint64_t& mask = attribute == LiquidAttribute::Fishable
+                      ? attributes.fishable : attributes.fatigue;
+  if (!mask)
+    return false;
+
+  mask = 0;
+  _auto_update_attributes = false;
+  for (liquid_layer& layer : _layers)
+    layer.disableFatigueOptimization();
+  tagUpdate();
+  return true;
+}
+
+bool ChunkWater::clearAttributes()
+{
+  if (!attributes.fishable && !attributes.fatigue)
+    return false;
+
+  attributes.fishable = 0;
+  attributes.fatigue = 0;
+  _auto_update_attributes = false;
+  for (liquid_layer& layer : _layers)
+    layer.disableFatigueOptimization();
+  tagUpdate();
+  return true;
+}
+
+bool ChunkWater::clearFishableAttributesOutsideLiquid()
+{
+  std::uint64_t const repaired_mask = attributes.fishable & liquidCellMask();
+  if (repaired_mask == attributes.fishable)
+    return false;
+
+  attributes.fishable = repaired_mask;
+  _auto_update_attributes = false;
+  for (liquid_layer& layer : _layers)
+    layer.disableFatigueOptimization();
+  tagUpdate();
+  return true;
+}
+
+std::uint64_t ChunkWater::liquidCellMask() const
+{
+  std::uint64_t liquid_cells = 0;
+  for (liquid_layer const& layer : _layers)
+    liquid_cells |= layer.getSubchunks();
+  return liquid_cells;
+}
+
+bool ChunkWater::regenerateAttributes()
+{
+  MH2O_Attributes const old_attributes = attributes;
+  // Force a rebuild from liquid data even if a prior attribute edit disabled auto-update
+  // (update_attributes() is now gated on _auto_update_attributes).
+  _auto_update_attributes = true;
+  update_attributes();
+  _auto_update_attributes = false;
+  bool const changed = old_attributes.fishable != attributes.fishable
+                    || old_attributes.fatigue != attributes.fatigue;
+  if (changed)
+    tagUpdate();
+  return changed;
 }
 
 int ChunkWater::layer_count() const
@@ -544,6 +768,14 @@ void ChunkWater::copy_height_to_layer(liquid_layer& target, glm::vec3 const& pos
 
 void ChunkWater::update_attributes()
 {
+  // Authored fishable/fatigue masks (paintAttribute/clear*) set _auto_update_attributes to
+  // false so this re-derivation stops clobbering them. The frozen MCLQ/MH2O save paths call
+  // this unconditionally; gating here keeps an ordinary save byte-identical (the flag stays
+  // true for normal painting) while letting hand-authored masks persist to disk. The only
+  // forced run is regenerateAttributes(), which sets the flag true around its call. (azure-port)
+  if (!_auto_update_attributes)
+    return;
+
   attributes.fishable = 0;
   attributes.fatigue = 0;
 

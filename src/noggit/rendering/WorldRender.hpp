@@ -41,6 +41,13 @@ struct WorldRenderParams
 {
   float cursorRotation;
   CursorType cursor_type;
+  // Water editor overlay/brush state fed from the active tool's draw parameters (Azure port).
+  bool project_cursor_on_water = false;
+  bool show_liquid_vertices = false;
+  int liquid_attribute_overlay = 0;
+  int liquid_edit_layer = -1;
+  std::uint64_t liquid_surface_token = 0;
+  int liquid_brush_falloff = 1;
   float brush_radius;
   bool show_unpaintable_chunks;
   bool show_painted_stamp_selection = false;

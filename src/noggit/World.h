@@ -10,6 +10,7 @@
 #include <noggit/world_model_instances_storage.hpp>
 #include <noggit/ContextObject.hpp>
 #include <noggit/RoadStyle.hpp>
+#include <noggit/tool_enums.hpp>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -31,6 +32,9 @@ namespace BlizzardDatabaseLib::Structures
 
 struct TileIndex;
 struct flatten_mode;
+
+// MH2O per-cell attribute mask selector, defined in ChunkWater.hpp (Azure port).
+enum class LiquidAttribute;
 
 class Brush;
 class MapTile;
@@ -215,8 +219,8 @@ public:
   template<typename Fun>
     void for_tile_at_force(const TileIndex& pos, Fun&&);
 
-  void changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, bool iter_wmos_ = true, bool iter_m2s = true);
-  void changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius);
+  void changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, bool iter_wmos_ = true, bool iter_m2s = true, BrushShape shape = BrushShape::CIRCLE);
+  void changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, BrushShape shape = BrushShape::CIRCLE);
   std::vector<selected_object_type> getObjectsInRange(glm::vec3 const& pos, float radius, bool ignore_height = true, bool iter_wmos_ = true, bool iter_m2s = true);
   void changeShader(glm::vec3 const& pos, glm::vec4 const& color, float change, float radius, bool editMode);
   void stampShader(glm::vec3 const& pos, glm::vec4 const& color, float change, float radius, bool editMode, QImage* img, bool paint, bool use_image_colors);
@@ -365,6 +369,8 @@ public:
   void clearAllModelsOnADT(TileIndex const& tile, bool action);
 
   // liquids
+  std::optional<glm::vec3> intersectLiquid(math::ray const& ray, int target_layer,
+                                           std::uint64_t surface_token = 0);
   void paintLiquid( glm::vec3 const& pos
                   , float radius
                   , int liquid_id
@@ -376,7 +382,32 @@ public:
                   , bool override_height
                   , bool override_liquid_id
                   , float opacity_factor
+                  , int target_layer = -1
+                  , std::uint64_t surface_token = 0
                   );
+  // Stroke-based depth/opacity and world-aligned UV projection on one liquid surface (Azure port).
+  void paintLiquidDepth(glm::vec3 const& pos, float radius, float depth, int target_layer,
+                        std::uint64_t surface_token = 0);
+  void projectLiquidUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation,
+                       int target_layer, std::uint64_t surface_token = 0);
+  // Per-cell fishable/fatigue attribute painting + bulk clear/regen over an ADT (Azure port).
+  void paintLiquidAttribute(glm::vec3 const& pos, float radius, LiquidAttribute attribute,
+                            bool value, int target_layer,
+                            std::uint64_t surface_token = 0);
+  void clearLiquidAttributes(const TileIndex& pos, std::optional<LiquidAttribute> attribute);
+  void clearLiquidFishingFlagsOutsideLiquid(const TileIndex& pos);
+  void regenerateLiquidAttributes(const TileIndex& pos);
+  // Liquid vertex-height sculpt channels. DEFERRED (azure-port): need liquid_layer vertex
+  // sculpting (collectLiquidVertices/editLiquidVertexGroups) not yet ported to Cinder.
+  // Currently no-ops so the Water UI's raise/lower/flatten/smooth channels link and do nothing.
+  void raiseLowerLiquid(glm::vec3 const& pos, float radius, float change, float inner_radius,
+                        int falloff, int target_layer, std::uint64_t surface_token = 0);
+  void flattenLiquid(glm::vec3 const& pos, float radius, float strength, float inner_radius,
+                     int falloff, glm::vec3 const& origin, math::radians angle,
+                     math::radians orientation, int target_layer,
+                     std::uint64_t surface_token = 0);
+  void smoothLiquid(glm::vec3 const& pos, float radius, float strength, float inner_radius,
+                    int falloff, int target_layer, std::uint64_t surface_token = 0);
   void CropWaterADT(const TileIndex& pos);
   void setWaterType(const TileIndex& pos, int type, int layer);
   int getWaterType(const TileIndex& tile, int layer) const;

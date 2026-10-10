@@ -33,6 +33,7 @@ namespace Noggit
       , _vertex_orientation (0.0f)
       , _cursor_pos(nullptr)
       , _vertex_mode(eVertexMode_Center)
+      , _brush_shape(BrushShape::CIRCLE)
       , _map_view(map_view)
     {
       setMinimumWidth(250);
@@ -129,6 +130,19 @@ namespace Noggit
 
       layout->addWidget(settings_group);
 
+      // Square-brush port (Noggit Azure): Circle/Square shape toggle for the raise/lower brush.
+      QGroupBox* shape_group (new QGroupBox ("Brush Shape", this));
+      auto* shape_layout (new QHBoxLayout (shape_group));
+      QRadioButton* radio_circle = new QRadioButton ("Circle", shape_group);
+      QRadioButton* radio_square = new QRadioButton ("Square", shape_group);
+      _shape_button_group = new QButtonGroup (shape_group);
+      _shape_button_group->addButton (radio_circle, static_cast<int>(BrushShape::CIRCLE));
+      _shape_button_group->addButton (radio_square, static_cast<int>(BrushShape::SQUARE));
+      shape_layout->addWidget (radio_circle);
+      shape_layout->addWidget (radio_square);
+      radio_circle->setChecked (true);
+      layout->addWidget(shape_group);
+
       _image_mask_group = new Noggit::Ui::Tools::ImageMaskSelector(map_view, this);
       _mask_image = _image_mask_group->getPixmap()->toImage();
       // layout->addWidget(_image_mask_group);
@@ -192,6 +206,14 @@ namespace Noggit
               , [&] (int id)
                 {
                   _vertex_mode = id;
+                }
+              );
+
+      // Square-brush port (Noggit Azure): remember the picked brush shape for changeTerrain().
+      connect ( _shape_button_group, qOverload<int> (&QButtonGroup::idClicked)
+              , [this] (int id)
+                {
+                  _brush_shape = static_cast<BrushShape> (id);
                 }
               );
 
@@ -272,10 +294,10 @@ namespace Noggit
         }
         else
         {
-          world->changeTerrain(pos, dt * _speed_slider->value(), radius, _edit_type, _inner_radius_slider->value());
+          world->changeTerrain(pos, dt * _speed_slider->value(), radius, _edit_type, _inner_radius_slider->value(), brushShape());
 
           world->changeObjectsWithTerrain(pos, dt * _speed_slider->value(), radius, _edit_type, _inner_radius_slider->value()
-              , _snap_wmo_objects_chkbox->isChecked(), _snap_m2_objects_chkbox->isChecked());
+              , _snap_wmo_objects_chkbox->isChecked(), _snap_m2_objects_chkbox->isChecked(), brushShape());
         }
       }
       else
@@ -409,6 +431,13 @@ namespace Noggit
       }
     }
 
+    // Square-brush port (Noggit Azure): the raise/lower brush shape selected in the UI, threaded
+    // into World::changeTerrain / World::changeObjectsWithTerrain and read by the cursor/BrushStack.
+    BrushShape TerrainTool::brushShape() const
+    {
+      return _brush_shape;
+    }
+
     float TerrainTool::brushRadius() const
     {
       return static_cast<float>(_radius_slider->value());
@@ -471,6 +500,8 @@ namespace Noggit
       json["inner_radius"] = _inner_radius_slider->rawValue();
       json["speed"] = _speed_slider->rawValue();
       json["edit_type"] = static_cast<int>(_edit_type);
+      // Square-brush port (Noggit Azure): persist the Circle/Square toggle.
+      json["brush_shape"] = static_cast<int>(_brush_shape);
 
       json["mask_enabled"] = _image_mask_group->isEnabled();
       json["brush_mode"] = _image_mask_group->getBrushMode();
@@ -487,6 +518,12 @@ namespace Noggit
       _inner_radius_slider->setValue(json["inner_radius"].toDouble());
       _speed_slider->setValue(json["speed"].toDouble());
       _edit_type = static_cast<eTerrainType>(json["edit_type"].toInt());
+      // Square-brush port (Noggit Azure): restore the saved shape and its radio button.
+      _brush_shape = json.contains("brush_shape")
+        ? static_cast<BrushShape>(json["brush_shape"].toInt())
+        : BrushShape::CIRCLE;
+      if (auto* button = _shape_button_group->button(static_cast<int>(_brush_shape)))
+        button->setChecked(true);
 
       _image_mask_group->setEnabled(json["mask_enabled"].toBool());
       _image_mask_group->setBrushMode(json["brush_mode"].toInt());

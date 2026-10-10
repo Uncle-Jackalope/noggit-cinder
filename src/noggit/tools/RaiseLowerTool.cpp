@@ -98,6 +98,11 @@ namespace Noggit
         CursorType cursorType = CursorType::CIRCLE;
         if ((_terrainTool->_edit_type != eTerrainType_Vertex && _terrainTool->_edit_type != eTerrainType_Script) && _terrainTool->getImageMaskSelector()->isEnabled())
             cursorType = CursorType::STAMP;
+        // Square-brush (Noggit Azure): square cursor for a square terrain brush or the Quadra
+        // edit type (the terrain tool's Circle/Square toggle drives brushShape()).
+        else if (_terrainTool->brushShape() == BrushShape::SQUARE
+                 || _terrainTool->_edit_type == eTerrainType_Quadra)
+            cursorType = CursorType::SQUARE;
 
         return ToolDrawParameters
         {

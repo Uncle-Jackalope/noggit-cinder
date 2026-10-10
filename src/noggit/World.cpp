@@ -1507,7 +1507,7 @@ auto World::stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiu
 }
 
 
-void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, bool iter_wmos_, bool iter_m2s)
+void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, bool iter_wmos_, bool iter_m2s, BrushShape shape)
 {
     // applies the terrain brush to the terrain objects hit
     ZoneScoped;
@@ -1517,7 +1517,13 @@ void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float r
 
   // Identical code to chunk->changeTerrain()
   //    if (_snap_m2_objects_chkbox->isChecked() || _snap_wmo_objects_chkbox->isChecked()) {
-  auto objects_hit = getObjectsInRange(pos, radius, true, iter_wmos_, iter_m2s);
+  // Square-brush port (Noggit Azure): for a SQUARE brush the candidate set must cover the
+  // square's corners, so widen the gather radius to radius*sqrt(2); the per-object gate below
+  // then clamps to the square via max(|xdiff|,|zdiff|).
+  float const candidate_radius = shape == BrushShape::SQUARE
+    ? radius * std::sqrt(2.0f)
+    : radius;
+  auto objects_hit = getObjectsInRange(pos, candidate_radius, true, iter_wmos_, iter_m2s);
 
   for (auto obj : objects_hit)
   {
@@ -1541,7 +1547,9 @@ void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float r
     }
     else
     {
-        dist = std::sqrt(xdiff * xdiff + zdiff * zdiff);
+        dist = shape == BrushShape::SQUARE
+          ? std::max(std::abs(xdiff), std::abs(zdiff))
+          : std::sqrt(xdiff * xdiff + zdiff * zdiff);
         if (dist < radius)
         {
             changed = true;
@@ -1581,22 +1589,30 @@ void World::changeObjectsWithTerrain(glm::vec3 const& pos, float change, float r
   }
 }
 
-void World::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius)
+void World::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, BrushShape shape)
 {
   ZoneScoped;
 
-  for_all_chunks_in_range
-    ( pos, radius
-    , [&] (MapChunk* chunk)
-      {
-        NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
-        return chunk->changeTerrain(pos, change, radius, BrushType, inner_radius);
-      }
-    , [this] (MapChunk* chunk)
-      {
-        recalc_norms (chunk);
-      }
-    );
+  // Square-brush port (Noggit Azure): a SQUARE brush must visit every chunk overlapping the
+  // bounding square (for_all_chunks_in_rect), not just those inside the circular radius
+  // (for_all_chunks_in_range); the SQUARE shape is then threaded down to the per-vertex math.
+  auto edit =
+    [&] (MapChunk* chunk)
+    {
+      NOGGIT_CUR_ACTION->registerChunkTerrainChange(chunk);
+      return chunk->changeTerrain(pos, change, radius, BrushType, inner_radius, shape);
+    };
+
+  auto post =
+    [this] (MapChunk* chunk)
+    {
+      recalc_norms (chunk);
+    };
+
+  if (shape == BrushShape::SQUARE)
+    for_all_chunks_in_rect (pos, radius, edit, post);
+  else
+    for_all_chunks_in_range (pos, radius, edit, post);
 }
 
 std::vector<selected_object_type> World::getObjectsInRange(glm::vec3 const& pos, float radius, bool ignore_height, bool iter_wmos_, bool iter_m2s)
@@ -1732,14 +1748,19 @@ void World::recalc_norms (MapChunk* chunk) const
 bool World::paintTexture(glm::vec3 const& pos, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture)
 {
   ZoneScoped;
-  return for_all_chunks_in_range
-    ( pos, brush->getRadius()
-    , [&] (MapChunk* chunk)
-      {
-        NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
-        return chunk->paintTexture(pos, brush, strength, pressure, texture);
-      }
-    );
+  auto paint = [&] (MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+    return chunk->paintTexture(pos, brush, strength, pressure, texture);
+  };
+
+  // Square-brush port (Noggit Azure): a square footprint must visit the chunks in the
+  // bounding rect; the circle brush keeps the radial sweep. The per-texel shape test lives
+  // in TextureSet::paintTexture (it reads brush->getShape()).
+  if (brush->getShape() == BrushShape::SQUARE)
+    return for_all_chunks_in_rect(pos, brush->getRadius(), paint);
+
+  return for_all_chunks_in_range(pos, brush->getRadius(), paint);
 }
 
 namespace
@@ -1917,7 +1938,11 @@ bool World::sprayTexture(glm::vec3 const& pos, Brush *brush, float strength, flo
   {
     for (float px = pos.x - spraySize; px < pos.x + spraySize; px += inc)
     {
-      if ((sqrt(pow(px - pos.x, 2) + pow(pz - pos.z, 2)) <= spraySize) && ((rand() % 1000) < sprayPressure))
+      // Square-brush port (Noggit Azure): the square brush sprays the whole bounding box,
+      // the circle brush keeps the radial spray mask.
+      bool const inside_spray = brush->getShape() == BrushShape::SQUARE
+        || (sqrt(pow(px - pos.x, 2) + pow(pz - pos.z, 2)) <= spraySize);
+      if (inside_spray && ((rand() % 1000) < sprayPressure))
       {
         succ |= paintTexture({px, pos.y, pz}, brush, strength, pressure, texture);
       }
@@ -3222,15 +3247,201 @@ void World::paintLiquid( glm::vec3 const& pos
                        , bool override_height
                        , bool override_liquid_id
                        , float opacity_factor
+                       , int target_layer
+                       , std::uint64_t surface_token
                        )
 {
   ZoneScoped;
   for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
   {
     NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
-    chunk->liquid_chunk()->paintLiquid(pos, radius, liquid_id, add, angle, orientation, lock, origin, override_height, override_liquid_id, chunk, opacity_factor);
+    chunk->liquid_chunk()->paintLiquid(pos, radius, liquid_id, add, angle, orientation, lock, origin, override_height, override_liquid_id, chunk, opacity_factor, target_layer, surface_token);
     return true;
   });
+}
+
+std::optional<glm::vec3> World::intersectLiquid(math::ray const& ray, int target_layer,
+                                                std::uint64_t surface_token)
+{
+  ZoneScoped;
+  std::optional<float> nearest_distance;
+
+  auto test_layer = [&](ChunkWater const* chunk_water, liquid_layer const& layer)
+  {
+    glm::vec3 const bounds_min{chunk_water->xbase, layer.min() - 0.01f, chunk_water->zbase};
+    glm::vec3 const bounds_max{chunk_water->xbase + CHUNKSIZE, layer.max() + 0.01f,
+                               chunk_water->zbase + CHUNKSIZE};
+    if (!ray.intersect_bounds(bounds_min, bounds_max))
+      return;
+
+    auto const& vertices = layer.getVertices();
+    for (int z = 0; z < 8; ++z)
+      for (int x = 0; x < 8; ++x)
+      {
+        if (!layer.hasSubchunk(x, z))
+          continue;
+
+        int const id = z * 9 + x;
+        for (auto const& triangle : {std::array<int, 3>{id, id + 9, id + 1},
+                                     std::array<int, 3>{id + 1, id + 9, id + 10}})
+        {
+          auto const distance = ray.intersect_triangle(vertices[triangle[0]].position,
+                                                       vertices[triangle[1]].position,
+                                                       vertices[triangle[2]].position);
+          if (distance && (!nearest_distance || *distance < *nearest_distance))
+            nearest_distance = *distance;
+        }
+      }
+  };
+
+  for (MapTile* tile : mapIndex.loaded_tiles())
+  {
+    if (!tile || !tile->finishedLoading())
+      continue;
+
+    for (int z = 0; z < 16; ++z)
+      for (int x = 0; x < 16; ++x)
+      {
+        ChunkWater* chunk_water = tile->Water.getChunk(x, z);
+        if (!chunk_water)
+          continue;
+
+        auto const* layers = chunk_water->getLayers();
+
+        if (surface_token)
+        {
+          auto const found = std::find_if(layers->begin(), layers->end(),
+            [surface_token](liquid_layer const& layer)
+            {
+              return layer.surfaceToken() == surface_token;
+            });
+          if (found != layers->end())
+            test_layer(chunk_water, *found);
+        }
+        else if (target_layer >= 0 && target_layer < static_cast<int>(layers->size()))
+        {
+          test_layer(chunk_water, (*layers)[target_layer]);
+        }
+        else if (target_layer < 0)
+        {
+          for (liquid_layer const& layer : *layers)
+            test_layer(chunk_water, layer);
+        }
+      }
+  }
+
+  return nearest_distance ? std::optional<glm::vec3>{ray.position(*nearest_distance)}
+                          : std::nullopt;
+}
+
+void World::paintLiquidDepth(glm::vec3 const& pos, float radius, float depth, int target_layer,
+                             std::uint64_t surface_token)
+{
+  ZoneScoped;
+  for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+    chunk->liquid_chunk()->paintDepth(pos, radius, depth, target_layer, surface_token);
+    return true;
+  });
+}
+
+void World::projectLiquidUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation,
+                            int target_layer, std::uint64_t surface_token)
+{
+  ZoneScoped;
+  for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+    chunk->liquid_chunk()->projectUV(pos, radius, scale, rotation, target_layer, surface_token);
+    return true;
+  });
+}
+
+void World::paintLiquidAttribute(glm::vec3 const& pos, float radius, LiquidAttribute attribute,
+                                 bool value, int target_layer,
+                                 std::uint64_t surface_token)
+{
+  ZoneScoped;
+  for_all_chunks_in_range(pos, radius, [&](MapChunk* chunk)
+  {
+    NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+    chunk->liquid_chunk()->paintAttribute(pos, radius, attribute, value, target_layer,
+                                          surface_token);
+    return true;
+  });
+}
+
+void World::clearLiquidAttributes(const TileIndex& pos, std::optional<LiquidAttribute> attribute)
+{
+  ZoneScoped;
+  for_tile_at(pos, [&](MapTile* tile)
+  {
+    for (int x = 0; x < 16; ++x)
+      for (int z = 0; z < 16; ++z)
+      {
+        MapChunk* chunk = tile->getChunk(x, z);
+        NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+        if (attribute)
+          chunk->liquid_chunk()->clearAttribute(*attribute);
+        else
+          chunk->liquid_chunk()->clearAttributes();
+      }
+  });
+}
+
+void World::regenerateLiquidAttributes(const TileIndex& pos)
+{
+  ZoneScoped;
+  for_tile_at(pos, [&](MapTile* tile)
+  {
+    for (int x = 0; x < 16; ++x)
+      for (int z = 0; z < 16; ++z)
+      {
+        MapChunk* chunk = tile->getChunk(x, z);
+        NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+        chunk->liquid_chunk()->regenerateAttributes();
+      }
+  });
+}
+
+void World::clearLiquidFishingFlagsOutsideLiquid(const TileIndex& pos)
+{
+  ZoneScoped;
+  for_tile_at(pos, [&](MapTile* tile)
+  {
+    for (int x = 0; x < 16; ++x)
+      for (int z = 0; z < 16; ++z)
+      {
+        MapChunk* chunk = tile->getChunk(x, z);
+        NOGGIT_CUR_ACTION->registerChunkLiquidChange(chunk);
+        chunk->liquid_chunk()->clearFishableAttributesOutsideLiquid();
+      }
+  });
+}
+
+void World::raiseLowerLiquid(glm::vec3 const& /*pos*/, float /*radius*/, float /*change*/,
+                             float /*inner_radius*/, int /*falloff*/, int /*target_layer*/,
+                             std::uint64_t /*surface_token*/)
+{
+  // TODO(azure-port): liquid vertex sculpt. Needs liquid_layer vertex-height editing
+  // (Azure's collectLiquidVertices / editLiquidVertexGroups helpers) which are not yet
+  // ported to Cinder. No-op for now so the Water UI's "Raise / lower" channel links.
+}
+
+void World::flattenLiquid(glm::vec3 const& /*pos*/, float /*radius*/, float /*strength*/,
+                          float /*inner_radius*/, int /*falloff*/, glm::vec3 const& /*origin*/,
+                          math::radians /*angle*/, math::radians /*orientation*/,
+                          int /*target_layer*/, std::uint64_t /*surface_token*/)
+{
+  // TODO(azure-port): liquid vertex sculpt (see raiseLowerLiquid). No-op "Flatten" channel.
+}
+
+void World::smoothLiquid(glm::vec3 const& /*pos*/, float /*radius*/, float /*strength*/,
+                         float /*inner_radius*/, int /*falloff*/, int /*target_layer*/,
+                         std::uint64_t /*surface_token*/)
+{
+  // TODO(azure-port): liquid vertex sculpt (see raiseLowerLiquid). No-op "Smooth" channel.
 }
 
 void World::setWaterType(const TileIndex& pos, int type, int layer)

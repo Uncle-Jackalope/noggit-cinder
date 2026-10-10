@@ -1489,6 +1489,22 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
     water_shader.uniform ("use_transform", 0);
 
+    // Water editor cursor ring + attribute/vertex overlay uniforms (Azure port). All default
+    // to "off" (0) for other tools, so this only draws anything while the Water tool feeds them.
+    water_shader.uniform("draw_cursor_circle",
+                         render_settings.project_cursor_on_water
+                           ? static_cast<int>(render_settings.cursor_type) : 0);
+    water_shader.uniform("cursor_position", cursor_pos);
+    water_shader.uniform("outer_cursor_radius", render_settings.brush_radius);
+    water_shader.uniform("inner_cursor_ratio", render_settings.inner_radius_ratio);
+    water_shader.uniform("cursor_color", cursor_color);
+    water_shader.uniform("liquid_brush_falloff", render_settings.liquid_brush_falloff);
+    water_shader.uniform("liquid_attribute_overlay", render_settings.liquid_attribute_overlay);
+    water_shader.uniform("selected_surface_token_low",
+                         static_cast<int>(render_settings.liquid_surface_token & 0xFFFF'FFFFull));
+    water_shader.uniform("selected_surface_token_high",
+                         static_cast<int>(render_settings.liquid_surface_token >> 32));
+
     for (auto& pair : _world->_loaded_tiles_buffer)
     {
       MapTile* tile = pair.second;
@@ -1508,6 +1524,9 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           , render_settings.water_layer
           , render_settings.display_mode
           , &_liquid_texture_manager
+          , render_settings.show_liquid_vertices
+          , render_settings.liquid_edit_layer
+          , render_settings.liquid_surface_token
       );
     }
 

@@ -11,6 +11,8 @@
 #include <util/sExtendableArray.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <string>
 
 namespace
@@ -187,6 +189,7 @@ liquid_layer::liquid_layer(liquid_layer&& other) noexcept
   , _vertices(other._vertices)
   // , _indices_by_lod(other._indices_by_lod)
   , _fatigue_enabled(other._fatigue_enabled)
+  , _surface_token(other._surface_token)
   , pos(other.pos)
   , _chunk(other._chunk)
 {
@@ -203,6 +206,7 @@ liquid_layer::liquid_layer(liquid_layer const& other)
   , _vertices(other._vertices)
   // , _indices_by_lod(other._indices_by_lod)
   , _fatigue_enabled(other._fatigue_enabled)
+  , _surface_token(other._surface_token)
   , pos(other.pos)
   , _chunk(other._chunk)
 {
@@ -219,6 +223,7 @@ liquid_layer& liquid_layer::operator= (liquid_layer&& other) noexcept
   std::swap(_subchunks, other._subchunks);
   std::swap(_vertices, other._vertices);
   std::swap(_fatigue_enabled, other._fatigue_enabled);
+  std::swap(_surface_token, other._surface_token);
   std::swap(pos, other.pos);
   // std::swap(_indices_by_lod, other._indices_by_lod);
   std::swap(_chunk, other._chunk);
@@ -241,6 +246,7 @@ liquid_layer& liquid_layer::operator=(liquid_layer const& other)
   pos = other.pos;
   // _indices_by_lod = other._indices_by_lod;
   _fatigue_enabled = other._fatigue_enabled;
+  _surface_token = other._surface_token;
   _chunk = other._chunk;
 
   // update liquid type and vertex format
@@ -506,6 +512,11 @@ std::array<liquid_layer::liquid_vertex, 9 * 9>& liquid_layer::getVertices()
   return _vertices;
 }
 
+std::array<liquid_layer::liquid_vertex, 9 * 9> const& liquid_layer::getVertices() const
+{
+  return _vertices;
+}
+
 float liquid_layer::min() const
 {
   return _minimum;
@@ -519,6 +530,26 @@ float liquid_layer::max() const
 int liquid_layer::liquidID() const
 {
   return _liquid_id;
+}
+
+liquid_basic_types liquid_layer::liquidType() const
+{
+  return static_cast<liquid_basic_types>(_liquid_type);
+}
+
+int liquid_layer::vertexFormat() const
+{
+  return _liquid_vertex_format;
+}
+
+std::uint64_t liquid_layer::surfaceToken() const
+{
+  return _surface_token;
+}
+
+void liquid_layer::setSurfaceToken(std::uint64_t token)
+{
+  _surface_token = token;
 }
 
 int liquid_layer::mclq_liquid_type() const
@@ -546,7 +577,7 @@ void liquid_layer::setSubchunk(int x, int z, bool water)
   misc::set_bit(_subchunks, x, z, water);
 }
 
-std::uint64_t liquid_layer::getSubchunks()
+std::uint64_t liquid_layer::getSubchunks() const
 {
   return _subchunks;
 }
@@ -674,6 +705,76 @@ void liquid_layer::copy_subchunk_height(int x, int z, liquid_layer const& from)
   setSubchunk(x, z, true);
 }
 
+bool liquid_layer::usesVertex(int x, int z) const
+{
+  for (int dz = -1; dz <= 0; ++dz)
+    for (int dx = -1; dx <= 0; ++dx)
+    {
+      int const tile_x = x + dx;
+      int const tile_z = z + dz;
+      if (tile_x >= 0 && tile_x < 8 && tile_z >= 0 && tile_z < 8
+          && hasSubchunk(tile_x, tile_z))
+        return true;
+    }
+
+  return false;
+}
+
+void liquid_layer::paintDepth(glm::vec3 const& cursor_pos, float radius, float depth)
+{
+  // Azure promotes the vertex format to a combined HEIGHT_DEPTH_UV here so a
+  // magma/slime surface can carry depth as well. Cinder keeps the original
+  // single-channel-per-type model (the client only understands formats 0-2 and
+  // the frozen MCLQ save writes depth OR magma-uv per liquid type), so we only
+  // write the already-present per-vertex depth channel and never touch
+  // _liquid_vertex_format. Depth therefore persists for water/ocean (via MCLQ
+  // depth) and is a harmless in-memory no-op for magma/slime.
+  depth = std::clamp(depth, 0.f, 1.f);
+  for (int z = 0; z < 9; ++z)
+  {
+    for (int x = 0; x < 9; ++x)
+    {
+      auto& vertex = _vertices[z * 9 + x];
+      float const dx = vertex.position.x - cursor_pos.x;
+      float const dz = vertex.position.z - cursor_pos.z;
+      if (usesVertex(x, z) && dx * dx + dz * dz <= radius * radius)
+        vertex.depth = depth;
+    }
+  }
+}
+
+void liquid_layer::projectUV(glm::vec3 const& cursor_pos, float radius, float scale,
+                             math::radians rotation)
+{
+  // See paintDepth: we set the per-vertex UV channel only and leave the vertex
+  // format alone. UVs are meaningful on disk only for magma/slime (which already
+  // use LVF_HEIGHT_UV); on water/ocean this is an in-memory no-op.
+  scale = std::max(scale, 0.0001f);
+  float const cosine = std::cos(rotation._);
+  float const sine = std::sin(rotation._);
+
+  for (int z = 0; z < 9; ++z)
+  {
+    for (int x = 0; x < 9; ++x)
+    {
+      auto& vertex = _vertices[z * 9 + x];
+      float const dx = vertex.position.x - cursor_pos.x;
+      float const dz = vertex.position.z - cursor_pos.z;
+      if (!usesVertex(x, z) || dx * dx + dz * dz > radius * radius)
+        continue;
+
+      // World-aligned projection keeps UVs continuous across chunk boundaries.
+      float const world_u = vertex.position.x / scale;
+      float const world_v = vertex.position.z / scale;
+      float projected_u = std::fmod(world_u * cosine - world_v * sine, 256.f);
+      float projected_v = std::fmod(world_u * sine + world_v * cosine, 256.f);
+      if (projected_u < 0.f) projected_u += 256.f;
+      if (projected_v < 0.f) projected_v += 256.f;
+      vertex.uv = {projected_u, projected_v};
+    }
+  }
+}
+
 ChunkWater* liquid_layer::getChunk()
 {
   return _chunk;
@@ -682,6 +783,11 @@ ChunkWater* liquid_layer::getChunk()
 bool liquid_layer::has_fatigue() const
 {
   return _fatigue_enabled;
+}
+
+void liquid_layer::disableFatigueOptimization()
+{
+  _fatigue_enabled = false;
 }
 
 void liquid_layer::update_vertex_opacity(int x, int z, MapChunk* chunk, float factor)

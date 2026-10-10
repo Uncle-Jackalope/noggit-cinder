@@ -5,6 +5,7 @@
 #include <math/trig.hpp>
 #include <noggit/MapHeaders.h>
 #include <array>
+#include <cstdint>
 #include <glm/vec2.hpp>
 
 class MapChunk;
@@ -73,12 +74,22 @@ public:
   void update_underground_vertices_depth(MapChunk* chunk);
 
   std::array<liquid_vertex, 9 * 9>& getVertices();
+  // const overload used by the read-only attribute/vertex overlay renderer (Azure port)
+  std::array<liquid_vertex, 9 * 9> const& getVertices() const;
   // std::array<float, 9 * 9>& getDepth() { return _depth; };
   // std::array<glm::vec2, 9 * 9>& getTexCoords() { return _tex_coords; };
 
   float min() const;
   float max() const;
   int liquidID() const;
+  // basic liquid category (water/ocean/magma/slime) + raw MH2O vertex format,
+  // exposed for the attribute/vertex overlay renderer (Azure port)
+  liquid_basic_types liquidType() const;
+  int vertexFormat() const;
+  // opaque per-surface id so a stacked/near-equal layer can be re-identified
+  // across edits without relying on layer index (Azure port)
+  std::uint64_t surfaceToken() const;
+  void setSurfaceToken(std::uint64_t token);
   int mclq_liquid_type() const;
   // order of the flag corresponding to the liquid type in the mcnk header
   int mclq_flag_ordering() const;
@@ -87,9 +98,11 @@ public:
   bool subchunk_at_max_depth(int x, int z) const;
 
   bool hasSubchunk(int x, int z, int size = 1) const;
+  // true when the 9x9 grid vertex (x,z) is a corner of any covered subchunk (Azure port)
+  bool usesVertex(int x, int z) const;
   void setSubchunk(int x, int z, bool water);
 
-  std::uint64_t getSubchunks();
+  std::uint64_t getSubchunks() const;
 
   bool empty() const;
   bool full() const;
@@ -109,6 +122,13 @@ public:
 
   void copy_subchunk_height(int x, int z, liquid_layer const& from);
 
+  // Stroke-based depth/opacity painting and world-aligned UV projection (Azure port).
+  // These edit the in-memory vertex channels only; they intentionally do NOT change
+  // _liquid_vertex_format (see liquid_layer.cpp for why this keeps the MCLQ/MH2O
+  // save paths safe on Cinder).
+  void paintDepth(glm::vec3 const& pos, float radius, float depth);
+  void projectUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation);
+
   // Recalculate cached min/max (and fatigue) after bulk edits rewrite vertices,
   // e.g. a Chunk Mover liquid paste/preview. (Ported from Noggit Azure.)
   void refresh();
@@ -116,6 +136,9 @@ public:
   ChunkWater* getChunk();
 
   bool has_fatigue() const;
+  // Stop recomputing the ocean-fatigue optimisation after a manual attribute edit,
+  // so hand-authored fishable/fatigue masks are not re-derived (Azure port).
+  void disableFatigueOptimization();
 
 private:
   void create_vertices(float height);
@@ -133,6 +156,7 @@ private:
   int _liquid_type;
   int _liquid_vertex_format;
   int _mclq_liquid_type;
+  std::uint64_t _surface_token = 0;
   float _minimum;
   float _maximum;
 

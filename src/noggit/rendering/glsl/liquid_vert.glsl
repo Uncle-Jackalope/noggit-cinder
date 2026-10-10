@@ -55,6 +55,13 @@ flat out uint tex_array;
 flat out uint type;
 flat out vec2 anim_uv;
 flat out int tex_frame;
+// Water editor overlay data (Azure port): world/grid position + packed surface token and
+// per-cell fishable/fatigue attribute masks (carried in the spare uniform-block slots).
+out vec3 world_pos_;
+out vec2 liquid_grid_pos_;
+flat out uvec2 surface_token_;
+flat out uvec2 fishable_mask_;
+flat out uvec2 fatigue_mask_;
 
 bool hasSubchunk(uint x, uint z, uint subchunks_first, uint subchunks_second)
 {
@@ -104,12 +111,11 @@ void main()
   tex_frame = get_texture_frame(int(params.n_tex_frames));
   anim_uv = vec2(params.anim_u, params.anim_v);
 
-  if(use_transform == 1)
-  {
-    gl_Position = projection * model_view * transform * final_pos;
-  }
-  else
-  {
-    gl_Position = projection * model_view * final_pos;
-  }
+  vec4 rendered_pos = use_transform == 1 ? transform * final_pos : final_pos;
+  world_pos_ = rendered_pos.xyz;
+  liquid_grid_pos_ = position / UNITSIZE;
+  surface_token_ = uvec2(params._pad1, params._pad2);
+  fishable_mask_ = uvec2(params._pad3, params._pad4);
+  fatigue_mask_ = uvec2(params._pad5, params._pad6);
+  gl_Position = projection * model_view * rendered_pos;
 }

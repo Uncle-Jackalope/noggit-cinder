@@ -3731,6 +3731,13 @@ void MapView::draw_map()
   renderParams.draw_fog = _draw_fog.get();
   renderParams.ground_editing_brush = terrainType;
   renderParams.water_layer = displayed_water_layer;
+  // Water editor overlay/brush state -> liquid render path (Azure port).
+  renderParams.project_cursor_on_water = draw_parameters.project_cursor_on_water;
+  renderParams.show_liquid_vertices = draw_parameters.show_liquid_vertices;
+  renderParams.liquid_attribute_overlay = draw_parameters.liquid_attribute_overlay;
+  renderParams.liquid_edit_layer = draw_parameters.liquid_edit_layer;
+  renderParams.liquid_surface_token = draw_parameters.liquid_surface_token;
+  renderParams.liquid_brush_falloff = draw_parameters.liquid_brush_falloff;
   renderParams.display_mode = _display_mode;
   renderParams.draw_occlusion_boxes = _draw_occlusion_boxes.get();
   renderParams.minimap_render = false;

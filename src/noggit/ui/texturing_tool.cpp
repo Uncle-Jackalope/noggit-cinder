@@ -22,6 +22,7 @@
 #include <QSettings>
 #include <QStyle>
 #include <QStyleOptionSlider>
+#include <QtWidgets/QButtonGroup>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
@@ -30,6 +31,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
@@ -101,6 +103,25 @@ namespace Noggit
       _radius_slider->setDecimals (2);
       _radius_slider->setValue(_texture_brush.getRadius());
       slider_layout_left->addWidget (_radius_slider);
+
+      // Square-brush port (Noggit Azure): Circle/Square shape toggle for the paint brush.
+      auto* shape_group = new QGroupBox("Brush Shape", tool_widget);
+      auto* shape_layout = new QHBoxLayout(shape_group);
+      auto* circle_shape = new QRadioButton("Circle", shape_group);
+      auto* square_shape = new QRadioButton("Square", shape_group);
+      _brush_shape_group = new QButtonGroup(shape_group);
+      _brush_shape_group->addButton(circle_shape, static_cast<int>(BrushShape::CIRCLE));
+      _brush_shape_group->addButton(square_shape, static_cast<int>(BrushShape::SQUARE));
+      shape_layout->addWidget(circle_shape);
+      shape_layout->addWidget(square_shape);
+      circle_shape->setChecked(true);
+      slider_layout_left->addWidget(shape_group);
+
+      connect(_brush_shape_group, qOverload<int>(&QButtonGroup::idClicked), this,
+        [this](int id)
+        {
+          set_brush_shape(static_cast<BrushShape>(id));
+        });
 
       slider_layout_left->addWidget(new QLabel("Pressure:", tool_widget));
       _pressure_slider = new Noggit::Ui::Tools::UiCommon::ExtendedSlider(tool_widget);
@@ -749,6 +770,14 @@ namespace Noggit
       }
     }
 
+    // Square-brush port (Noggit Azure): propagate the shape to every brush the tool paints with.
+    void texturing_tool::set_brush_shape(BrushShape shape)
+    {
+      _texture_brush.setShape(shape);
+      _inner_brush.setShape(shape);
+      _spray_brush.setShape(shape);
+    }
+
     void texturing_tool::change_hardness(float change)
     {
       if (_texturing_mode == texturing_mode::paint)
@@ -846,12 +875,19 @@ namespace Noggit
     }
 
     float texturing_tool::hardness() const
-    { 
+    {
       switch (getTexturingMode())
       {
         case texturing_mode::paint: return static_cast<float>(_hardness_slider->value());
         default: return 0.f;
       }
+    }
+
+    // Square-brush port (Noggit Azure): the paint brush carries the selected shape, which the
+    // paint-distance math (World::paintTexture / TextureSet::paintTexture / sprayTexture) honors.
+    BrushShape texturing_tool::brushShape() const
+    {
+      return _texture_brush.getShape();
     }
 
     bool texturing_tool::show_unpaintable_chunks() const
@@ -1041,6 +1077,7 @@ namespace Noggit
       json["hardness"] = _hardness_slider->rawValue();
       json["pressure"] = _pressure_slider->rawValue();
       json["radius"] = _radius_slider->rawValue();
+      json["brush_shape"] = static_cast<int>(brushShape());
       json["brush_level"] = _brush_level_spin->value();
       json["texturing_mode"] = static_cast<int>(_texturing_mode);
       json["show_unpaintable_chunks"] = _show_unpaintable_chunks_cb->isChecked();
@@ -1075,6 +1112,13 @@ namespace Noggit
       _hardness_slider->setValue(json["hardness"].toDouble());
       _pressure_slider->setValue(json["pressure"].toDouble());
       _radius_slider->setValue(json["radius"].toDouble());
+      // Square-brush port (Noggit Azure): restore the saved shape and its radio button.
+      BrushShape const shape = json.contains("brush_shape")
+        ? static_cast<BrushShape>(json["brush_shape"].toInt())
+        : BrushShape::CIRCLE;
+      set_brush_shape(shape);
+      if (auto* button = _brush_shape_group->button(static_cast<int>(shape)))
+        button->setChecked(true);
       _brush_level_spin->setValue(json["brush_level"].toInt());
 
       tabs->setCurrentIndex(json["texturing_mode"].toInt());

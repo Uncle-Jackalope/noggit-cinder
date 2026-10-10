@@ -11,6 +11,21 @@
 class MapChunk;
 class TileWater;
 
+// Which MH2O per-cell attribute mask an attribute-painting operation targets (Azure port).
+enum class LiquidAttribute
+{
+  Fishable,
+  Fatigue
+};
+
+// Snapshot of a chunk's liquid for undo/redo (Azure port). liquid_layer is copyable.
+struct ChunkWaterState
+{
+  std::vector<liquid_layer> layers;
+  MH2O_Attributes attributes;
+  bool auto_update_attributes = true;
+};
+
 namespace BlizzardArchive
 {
   class ClientFile;
@@ -82,13 +97,37 @@ public:
                   , bool override_liquid_id
                   , MapChunk* chunk
                   , float opacity_factor
+                  , int target_layer = -1
+                  , std::uint64_t surface_token = 0
                   );
+
+  // Stroke-based depth/opacity and world-aligned UV projection on one surface (Azure port).
+  void paintDepth(glm::vec3 const& pos, float radius, float depth, int target_layer,
+                  std::uint64_t surface_token = 0);
+  void projectUV(glm::vec3 const& pos, float radius, float scale, math::radians rotation,
+                 int target_layer, std::uint64_t surface_token = 0);
 
   MapChunk* getChunk();
   TileWater* getWaterTile();
 
   MH2O_Attributes const& getAttributes() const;
   MH2O_Attributes& getAttributes();
+
+  // Undo/redo snapshot of the whole liquid state (Azure port).
+  ChunkWaterState getState() const;
+  void restoreState(ChunkWaterState const& state);
+
+  // Per-cell attribute painting / clearing (Azure port). Each returns true when the
+  // chunk's masks changed so the caller can skip no-op tiles. NOTE: these only edit
+  // the in-memory masks and stop update_layers() from re-deriving them; the frozen
+  // MCLQ/MH2O save paths still regenerate attributes, so persisting authored masks to
+  // disk needs a save-path gate -- see paintAttribute in ChunkWater.cpp.
+  bool paintAttribute(glm::vec3 const& pos, float radius, LiquidAttribute attribute, bool value,
+                      int target_layer = -1, std::uint64_t surface_token = 0);
+  bool clearAttribute(LiquidAttribute attribute);
+  bool clearAttributes();
+  bool clearFishableAttributesOutsideLiquid();
+  bool regenerateAttributes();
 
   float xbase, zbase;
 
@@ -104,6 +143,11 @@ private:
   void cleanup();
 
   void copy_height_to_layer(liquid_layer& target, glm::vec3 const& pos, float radius);
+  // Map an explicit surface selection to a concrete layer index (Azure port):
+  // prefers the surface_token match, else falls back to target_layer.
+  int resolve_layer(int target_layer, std::uint64_t surface_token) const;
+  // Union of every layer's covered-subchunk mask (Azure port).
+  std::uint64_t liquidCellMask() const;
 
   bool _auto_update_attributes = true;
   // updates attributes for all layers

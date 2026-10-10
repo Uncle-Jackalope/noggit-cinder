@@ -11,6 +11,7 @@
 #include <noggit/Sky.h>
 #include <noggit/texture_set.hpp>
 #include <noggit/liquid_layer.hpp>
+#include <noggit/ChunkWater.hpp> // ChunkWaterState (liquid undo snapshot, Azure port)
 #include <QObject>
 
 #include <functional>
@@ -185,8 +186,10 @@ namespace Noggit
         std::vector<std::pair<MapChunk*, std::array<std::uint8_t, 8>>> _chunk_detaildoodad_exclusion_post;
         std::vector<std::pair<MapChunk*, mcnk_flags>> _chunk_flags_pre;
         std::vector<std::pair<MapChunk*, mcnk_flags>> _chunk_flags_post;
-        std::vector<std::pair<MapChunk*, std::vector<liquid_layer>>> _chunk_liquid_pre;
-        std::vector<std::pair<MapChunk*, std::vector<liquid_layer>>> _chunk_liquid_post;
+        // Full liquid snapshot (layers + fishable/fatigue masks + auto-update flag) so that
+        // attribute/depth/UV edits undo/redo, not just layer coverage/height (Azure port).
+        std::vector<std::pair<MapChunk*, ChunkWaterState>> _chunk_liquid_pre;
+        std::vector<std::pair<MapChunk*, ChunkWaterState>> _chunk_liquid_post;
         std::vector<std::pair<uint32_t, area_trigger>> _transformed_area_trigger_pre;
         std::vector<std::pair<uint32_t, area_trigger>> _transformed_area_trigger_post;
         std::vector<SkyTransformCache> _transformed_sky_pre, _transformed_sky_post;

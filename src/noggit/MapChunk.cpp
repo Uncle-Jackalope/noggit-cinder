@@ -872,7 +872,7 @@ void MapChunk::updateNormalsData()
   //gl.texSubImage2D(GL_TEXTURE_2D, 0, 0, px * 16 + py, mapbufsize, 1, GL_RGB, GL_FLOAT, mNormals);
 }
 
-bool MapChunk::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius)
+bool MapChunk::changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, BrushShape shape)
 {
   //float dist, xdiff, zdiff;
   bool changed = false;
@@ -880,7 +880,7 @@ bool MapChunk::changeTerrain(glm::vec3 const& pos, float change, float radius, i
   for (int i = 0; i < mapbufsize; ++i)
   {
     float dt = change;
-    if (changeTerrainProcessVertex(pos, mVertices[i], dt, radius, inner_radius, BrushType))
+    if (changeTerrainProcessVertex(pos, mVertices[i], dt, radius, inner_radius, BrushType, shape))
     {
       changed = true;
       mVertices[i].y += dt;
@@ -1206,7 +1206,8 @@ bool MapChunk::blurTerrain ( glm::vec3 const& pos
 }
 
 bool MapChunk::changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt,
-                                          float radiusOuter, float radiusInner, int brushType)
+                                          float radiusOuter, float radiusInner, int brushType,
+                                          BrushShape shape)
 {
   float dist, xdiff, zdiff;
   bool changed = false;
@@ -1225,7 +1226,12 @@ bool MapChunk::changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const&
   }
   else
   {
-    dist = std::sqrt(xdiff*xdiff + zdiff*zdiff);
+    // Square-brush port (Noggit Azure): a SQUARE brush measures distance with the Chebyshev
+    // (L-infinity) metric max(|xdiff|,|zdiff|) so the falloff is axis-aligned square, while a
+    // CIRCLE brush keeps the Euclidean distance.
+    dist = shape == BrushShape::SQUARE
+      ? std::max(std::abs(xdiff), std::abs(zdiff))
+      : std::sqrt(xdiff*xdiff + zdiff*zdiff);
     if (dist < radiusOuter)
     {
       changed = true;

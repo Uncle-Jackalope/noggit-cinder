@@ -175,13 +175,13 @@ public:
   glm::uvec2 getUnitIndextAt(glm::vec3 pos);
 
   //! \todo implement Action stack for these
-  bool changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius);
+  bool changeTerrain(glm::vec3 const& pos, float change, float radius, int BrushType, float inner_radius, BrushShape shape = BrushShape::CIRCLE);
   bool flattenTerrain(glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode, const glm::vec3& origin, math::degrees angle, math::degrees orientation);
   bool blurTerrain ( glm::vec3 const& pos, float remain, float radius, int BrushType, flatten_mode const& mode
                    /*, std::function<std::optional<float>(float, float)> height*/
                    );
 
-  bool changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt, float radiusOuter, float radiusInner, int brushType);
+  bool changeTerrainProcessVertex(glm::vec3 const& pos, glm::vec3 const& vertex, float& dt, float radiusOuter, float radiusInner, int brushType, BrushShape shape = BrushShape::CIRCLE);
   auto stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter
   , float radiusInner, int brushType, bool sculpt) -> void;
   void selectVertex(glm::vec3 const& pos, float radius, std::unordered_set<glm::vec3*>& vertices);

@@ -22,6 +22,9 @@ void LiquidRender::draw(math::frustum const& frustum
     , int layer
     , display_mode display
     , LiquidTextureManager* tex_manager
+    , bool show_vertex_grid
+    , int vertex_grid_layer
+    , std::uint64_t surface_token
 )
 {
   if (!_map_tile->Water.hasData() && !_map_tile->Water.needsUpdate())
@@ -41,8 +44,17 @@ void LiquidRender::draw(math::frustum const& frustum
 
   std::size_t n_render_blocks = _render_layers.size();
 
-  for (auto& render_layer : _render_layers)
+  for (std::size_t layer_index = 0; layer_index < _render_layers.size(); ++layer_index)
   {
+    auto& render_layer = _render_layers[layer_index];
+
+    // MH2O vertex-grid overlay (Azure port): the shader draws the grid only when enabled,
+    // and only for the selected surface (matched by token) or the selected display layer.
+    water_shader.uniform("show_liquid_vertex_grid",
+                         show_vertex_grid
+                           && (surface_token != 0
+                               || layer_index == static_cast<std::size_t>(vertex_grid_layer)));
+
     gl.bindBufferRange(GL_UNIFORM_BUFFER, OpenGL::ubo_targets::CHUNK_LIQUID_INSTANCE_INDEX, render_layer.chunk_data_buf, 0, sizeof(OpenGL::LiquidChunkInstanceDataUniformBlock) * 256);
 
     gl.activeTexture(GL_TEXTURE0);
@@ -173,6 +185,17 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
 
           params_data.subchunks_1 = subchunks & 0xFF'FF'FF'FF;
           params_data.subchunks_2 = subchunks >> 32;
+
+          // Pack the surface token + per-cell fishable/fatigue masks into the spare uniform
+          // slots so the shader can draw the surface-matched vertex grid and the attribute
+          // overlay (Azure port). Reads the now-exposed surfaceToken()/getChunk()->getAttributes().
+          params_data._pad1 = static_cast<unsigned>(layer.surfaceToken() & 0xFFFF'FFFFull);
+          params_data._pad2 = static_cast<unsigned>(layer.surfaceToken() >> 32);
+          MH2O_Attributes const& liquid_attributes = layer.getChunk()->getAttributes();
+          params_data._pad3 = static_cast<unsigned>(liquid_attributes.fishable & 0xFFFF'FFFFull);
+          params_data._pad4 = static_cast<unsigned>(liquid_attributes.fishable >> 32);
+          params_data._pad5 = static_cast<unsigned>(liquid_attributes.fatigue & 0xFFFF'FFFFull);
+          params_data._pad6 = static_cast<unsigned>(liquid_attributes.fatigue >> 32);
 
           // fill vertex data
           auto& vertices = layer.getVertices();

@@ -20,6 +20,31 @@
 
 #include <glm/geometric.hpp>
 
+namespace
+{
+  // Square-brush port (Noggit Azure): the Chebyshev (max-axis) analogue of
+  // misc::getShortestDist. For a circle brush it defers to the Euclidean helper; for a square
+  // brush it returns the larger of the per-axis gaps between the point and the cell (0 on an
+  // axis when the point lies within that axis' span), giving the brush a square footprint.
+  float brush_shortest_dist(float x, float z, float square_x, float square_z,
+                            float unit_size, BrushShape shape)
+  {
+    if (shape != BrushShape::SQUARE)
+      return misc::getShortestDist(x, z, square_x, square_z, unit_size);
+
+    auto const axis_gap = [](float point, float square, float size)
+    {
+      if (point < square)
+        return square - point;
+      if (point > square + size)
+        return point - (square + size);
+      return 0.0f;
+    };
+
+    return std::max(axis_gap(x, square_x, unit_size), axis_gap(z, square_z, unit_size));
+  }
+}
+
 TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
                         , bool use_big_alphamaps, bool do_not_fix_alpha_map, bool do_not_convert_alphamaps
                         , Noggit::NoggitRenderContext context, MapChunkHeader const& header)
@@ -1720,7 +1745,8 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
 
   radius = brush->getRadius();
 
-  if (misc::getShortestDist(x, z, xbase, zbase, CHUNKSIZE) > radius)
+  // Square-brush port (Noggit Azure): cull the whole chunk and each texel by the brush shape.
+  if (brush_shortest_dist(x, z, xbase, zbase, CHUNKSIZE, brush->getShape()) > radius)
   {
     return changed;
   }
@@ -1735,7 +1761,7 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
     xPos = xbase;
     for (int i = 0; i < 64; ++i)
     {
-      dist = misc::getShortestDist(x, z, xPos, zPos, TEXDETAILSIZE);
+      dist = brush_shortest_dist(x, z, xPos, zPos, TEXDETAILSIZE, brush->getShape());
 
       if (dist <= radius)
       {

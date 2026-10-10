@@ -39,10 +39,10 @@ namespace Noggit
     public:
       TerrainTool(MapView* map_view, QWidget* parent = nullptr, bool stamp = false);
 
-      // Brush shape for the BrushStack. The square-brush option (used by Azure's terrain sculpt)
-      // isn't wired into Cinder's terrain math yet, so this reports CIRCLE for now; the stamp
-      // stack falls back to circular brushes. TODO: add the shape toggle + square sculpt math.
-      BrushShape brushShape() const { return BrushShape::CIRCLE; }
+      // Square-brush port (Noggit Azure): the terrain raise/lower brush shape, driven by the
+      // Circle/Square toggle below and threaded into World/MapChunk::changeTerrain. Also read by
+      // the BrushStack and the RaiseLowerTool cursor so a square brush shows a square cursor.
+      BrushShape brushShape() const;
 
       void changeTerrain (World*, glm::vec3 const& pos, float dt);
 
@@ -107,6 +107,9 @@ namespace Noggit
 
       QButtonGroup* _type_button_group;
       QButtonGroup* _vertex_button_group;
+      // Square-brush port (Noggit Azure): Circle/Square shape toggle + its current value.
+      QButtonGroup* _shape_button_group;
+      BrushShape _brush_shape;
       QGroupBox* _speed_box;
       QGroupBox* _vertex_type_group;
       Noggit::Ui::Tools::ImageMaskSelector* _image_mask_group;

@@ -194,10 +194,9 @@ void Noggit::Action::undo(bool redo)
   {
     for (auto& pair : redo ? _chunk_liquid_post : _chunk_liquid_pre)
     {
-      auto liquid_chunk = pair.first->liquid_chunk();
-      *liquid_chunk->getLayers() = pair.second;
-      liquid_chunk->update_layers();
-      liquid_chunk->tagUpdate();
+      // restoreState() replaces the layers + attribute masks, rebuilds render/extents
+      // data and tags the tile for update (Azure port).
+      pair.first->liquid_chunk()->restoreState(pair.second);
     }
   }
   if (_flags & ActionFlags::eVERTEX_SELECTION)
@@ -588,7 +587,7 @@ void Noggit::Action::finish()
       auto& post = _chunk_liquid_post.at(i);
       auto& pre = _chunk_liquid_pre.at(i);
       post.first = pre.first;
-      post.second = *pre.first->liquid_chunk()->getLayers();
+      post.second = pre.first->liquid_chunk()->getState();
     }
   }
   if (_flags & ActionFlags::eVERTEX_SELECTION)
@@ -887,7 +886,7 @@ void Noggit::Action::registerChunkLiquidChange(MapChunk* chunk)
     if (pair.first == chunk)
       return;
   }
-  _chunk_liquid_pre.emplace_back(std::make_pair(chunk, *chunk->liquid_chunk()->getLayers()));
+  _chunk_liquid_pre.emplace_back(std::make_pair(chunk, chunk->liquid_chunk()->getState()));
 }
 
 void Noggit::Action::registerVertexSelectionChange()
