@@ -81,6 +81,8 @@ uniform float cursorRotation;
 uniform float outer_cursor_radius;
 uniform float inner_cursor_ratio;
 uniform vec4 cursor_color;
+uniform bool draw_painted_stamp_selection;
+uniform vec2 painted_stamp_selection_origin;
 uniform bool enable_mists_heightmapping;
 
 in vec3 vary_position;
@@ -581,6 +583,15 @@ void main()
 
 
       out_color.rgb = mix(out_color.rgb, color.rgb, color.a);
+  }
+
+  if (draw_painted_stamp_selection)
+  {
+    vec2 selection_uv = (vary_position.xz - painted_stamp_selection_origin) / TILESIZE;
+    float selection_bounds = float(selection_uv.x >= 0.0 && selection_uv.x <= 1.0
+        && selection_uv.y >= 0.0 && selection_uv.y <= 1.0);
+    float selection = texture(stamp_brush, selection_uv).r * selection_bounds;
+    out_color.rgb = mix(out_color.rgb, vec3(0.03, 0.20, 1.0), selection * 0.34);
   }
 
   if(draw_cursor_circle == 1)

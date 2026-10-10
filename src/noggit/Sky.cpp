@@ -746,6 +746,45 @@ Sky* Skies::createNewSky(Sky*  old_sky, unsigned int new_id, glm::vec3& pos)
   return nullptr;
 }
 
+Sky* Skies::restoreSky(Sky const& sky)
+{
+  if (Sky* existing = findSkyById(sky.Id))
+    return existing;
+
+  skies.push_back(sky);
+  skies.back().setSelected(false);
+  skies.back().save_light_record();
+  ++numSkies;
+  std::sort(skies.begin(), skies.end());
+  force_update();
+  return findSkyById(sky.Id);
+}
+
+bool Skies::deleteSkyById(int sky_id)
+{
+  auto const found = std::find_if(skies.begin(), skies.end(), [sky_id](Sky const& sky)
+  {
+    return sky.Id == sky_id;
+  });
+  if (found == skies.end() || found->global || found->zone_light)
+    return false;
+
+  gLightDB.removeRecord(static_cast<std::size_t>(sky_id), LightDB::ID);
+  skies.erase(found);
+  if (numSkies > 0)
+    --numSkies;
+  force_update();
+  return true;
+}
+
+void Skies::selectSkyById(int sky_id)
+{
+  for (Sky& sky : skies)
+  {
+    sky.setSelected(!sky.global && !sky.zone_light && sky.Id == sky_id);
+  }
+}
+
 // returns the global light, not the highest weight
 Sky* Skies::findSkyWeights(glm::vec3 pos)
 {
@@ -1524,6 +1563,36 @@ bool Sky::operator<(const Sky& s) const
 bool Sky::selected() const
 {
   return _selected;
+}
+
+void Sky::setSelected(bool selected)
+{
+  _selected = selected;
+}
+
+void Sky::setMapId(int map_id)
+{
+  mapId = map_id;
+}
+
+void Sky::save_light_record()
+{
+  bool const create_record = !gLightDB.CheckIfIdExists(Id);
+  DBCFile::Record lightDbRecord = create_record ? gLightDB.addRecord(Id) : gLightDB.getByID(Id);
+
+  if (create_record)
+    lightDbRecord.write(LightDB::Map, mapId);
+
+  lightDbRecord.write(LightDB::PositionX, pos.x * skymul);
+  lightDbRecord.write(LightDB::PositionY, pos.y * skymul);
+  lightDbRecord.write(LightDB::PositionZ, pos.z * skymul);
+  lightDbRecord.write(LightDB::RadiusInner, r1 * skymul);
+  lightDbRecord.write(LightDB::RadiusOuter, r2 * skymul);
+
+  for (int param_id = 0; param_id < NUM_SkyParamsNames; ++param_id)
+    lightDbRecord.write(LightDB::DataIDs + param_id, skyParams[param_id]);
+
+  is_new_record = false;
 }
 
 void Sky::save_to_dbc()

@@ -4,6 +4,7 @@
 #define NOGGIT_WORLDRENDER_HPP
 
 #include <noggit/rendering/BaseRender.hpp>
+#include <noggit/TileIndex.hpp>
 
 #include <external/glm/glm.hpp>
 
@@ -21,6 +22,10 @@
 #include <memory>
 #include <optional>
 #include <vector>
+#include <map>
+#include <array>
+#include <algorithm>
+#include <cstdint>
 
 namespace OpenGL
 {
@@ -38,6 +43,7 @@ struct WorldRenderParams
   CursorType cursor_type;
   float brush_radius;
   bool show_unpaintable_chunks;
+  bool show_painted_stamp_selection = false;
   bool draw_only_inside_light_sphere;
   bool draw_wireframe_light_sphere;
   float alpha_light_sphere;
@@ -84,13 +90,16 @@ namespace Noggit::Rendering
     void upload() override;
     void unload() override;
 
-    // Painted-stamp source-selection overlay. The visual overlay itself (the translucent
-    // highlight of selected cells) is an Azure render feature not yet ported to Cinder, so
-    // these are accepted no-ops: the stamp tool still tracks and applies the selection, it
-    // just isn't highlighted in the viewport.
+    // Painted-stamp source-selection overlay (ported from Noggit Azure): highlights the stamp
+    // SOURCE chunks in the 3D viewport. update/clear are driven by the stamp tool (BrushStack);
+    // prepare uploads pending mask changes once per frame before the terrain pass.
     void updatePaintedStampSelectionOverlay(std::vector<glm::ivec2> const& cells, bool selected);
     void clearPaintedStampSelectionOverlay();
     void preparePaintedStampSelectionOverlay();
+
+    // in-editor detail-doodad live preview (client ground-clutter preview), ported from Noggit Azure
+    void setDetailDoodadPreview(Noggit::DetailDoodadPreview preview);
+    void clearDetailDoodadPreview();
 
     void draw (glm::mat4x4 const& model_view
         , glm::mat4x4 const& projection
@@ -171,6 +180,61 @@ namespace Noggit::Rendering
     bool _draw_detail_doodads = false;
     int _detail_doodad_density = 16;    // client CVar groundEffectDensity, 16..256
     float _detail_doodad_distance = 140.f;
+
+    // painted-stamp source-selection overlay (ported from Noggit Azure): a per-tile R8 mask
+    // texture, double-buffered so an upload never clobbers the texture the terrain shader may
+    // still be sampling, bound to texture unit 4 while drawing terrain.
+    static constexpr int painted_stamp_selection_resolution = 1024;
+    struct PaintedStampSelectionDirtyRegion
+    {
+      int min_x = painted_stamp_selection_resolution;
+      int min_z = painted_stamp_selection_resolution;
+      int max_x = -1;
+      int max_z = -1;
+
+      [[nodiscard]] bool pending() const
+      {
+        return max_x >= min_x && max_z >= min_z;
+      }
+
+      void include(int x, int z)
+      {
+        min_x = std::min(min_x, x);
+        min_z = std::min(min_z, z);
+        max_x = std::max(max_x, x);
+        max_z = std::max(max_z, z);
+      }
+
+      void includeAll()
+      {
+        min_x = 0;
+        min_z = 0;
+        max_x = painted_stamp_selection_resolution - 1;
+        max_z = painted_stamp_selection_resolution - 1;
+      }
+
+      void clear()
+      {
+        min_x = painted_stamp_selection_resolution;
+        min_z = painted_stamp_selection_resolution;
+        max_x = -1;
+        max_z = -1;
+      }
+    };
+
+    struct PaintedStampSelectionPage
+    {
+      std::vector<std::uint8_t> pixels;
+      std::size_t selected_count = 0;
+      std::array<GLuint, 2> textures{};
+      std::array<bool, 2> uploaded{};
+      std::array<PaintedStampSelectionDirtyRegion, 2> dirty_regions{};
+      int displayed_texture = -1;
+      bool needs_upload = false;
+    };
+
+    bool bindPaintedStampSelectionOverlay(TileIndex const& tile_index);
+    std::map<TileIndex, PaintedStampSelectionPage> _painted_stamp_selection_pages;
 
     // horizon && skies && lighting
     std::unique_ptr<Noggit::map_horizon::render> _horizon_render;

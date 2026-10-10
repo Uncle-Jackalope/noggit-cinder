@@ -310,6 +310,18 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   {
     ZoneScopedN("World::draw() : Draw terrain");
 
+    // painted-stamp selection overlay (Azure): save the texture bound at unit 4 so the
+    // per-tile overlay bind can be restored after the terrain pass
+    GLint previous_active_texture = GL_TEXTURE0;
+    GLint previous_stamp_texture = 0;
+    if (render_settings.show_painted_stamp_selection)
+    {
+      gl.getIntegerv(GL_ACTIVE_TEXTURE, &previous_active_texture);
+      gl.activeTexture(GL_TEXTURE0 + 4);
+      gl.getIntegerv(GL_TEXTURE_BINDING_2D, &previous_stamp_texture);
+      gl.activeTexture(static_cast<GLenum>(previous_active_texture));
+    }
+
     gl.disable(GL_BLEND);
 
     {
@@ -363,6 +375,15 @@ void WorldRender::draw (glm::mat4x4 const& model_view
         if (num_chunks_uploaded_alphamap > _frame_max_chunk_updates)
           skip_updates = true;
 
+        bool const show_painted_selection = render_settings.show_painted_stamp_selection
+            && bindPaintedStampSelectionOverlay(tile->index);
+        mcnk_shader.uniform("draw_painted_stamp_selection", show_painted_selection);
+        if (show_painted_selection)
+        {
+          mcnk_shader.uniform("painted_stamp_selection_origin",
+                              glm::vec2(tile->xbase, tile->zbase));
+        }
+
         tile->renderer()->draw(
             mcnk_shader
             , camera_pos
@@ -385,6 +406,16 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
       gl.bindVertexArray(0);
       gl.bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
+
+    // painted-stamp selection overlay (Azure): restore the texture that was bound at unit 4
+    if (render_settings.show_painted_stamp_selection)
+    {
+      gl.activeTexture(GL_TEXTURE0 + 4);
+      gl.bindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_stamp_texture));
+      gl.activeTexture(static_cast<GLenum>(previous_active_texture));
+      OpenGL::texture::current_active_texture =
+          static_cast<std::size_t>(previous_active_texture - GL_TEXTURE0);
     }
   }
 
@@ -1922,19 +1953,171 @@ void WorldRender::updateLightingUniformBlockMinimap(MinimapRenderSettings* setti
   gl.bufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(OpenGL::LightingUniformBlock), &_lighting_ubo_data);
 }
 
-// Painted-stamp selection overlay: accepted no-ops (see WorldRender.hpp). The stamp tool still
-// tracks/applies its painted source selection; only the viewport highlight is absent until the
-// Azure overlay renderer is ported to Cinder.
-void WorldRender::updatePaintedStampSelectionOverlay(std::vector<glm::ivec2> const&, bool)
+// Painted-stamp source-selection overlay (ported from Noggit Azure): highlights the stamp SOURCE
+// chunks in the 3D viewport. Per-tile R8 mask pages, double-buffered so an upload never clobbers
+// the texture the terrain shader may still be sampling; bound to texture unit 4 while drawing
+// terrain. (The terrain fragment shader samples this via the draw_painted_stamp_selection /
+// painted_stamp_selection_origin uniforms set in the terrain draw loop.)
+void WorldRender::updatePaintedStampSelectionOverlay(
+    std::vector<glm::ivec2> const& cells, bool selected)
 {
+  auto floor_divide = [](int value, int divisor)
+  {
+    int quotient = value / divisor;
+    if (value % divisor < 0)
+      --quotient;
+    return quotient;
+  };
+
+  for (glm::ivec2 const& cell : cells)
+  {
+    int const tile_x = floor_divide(cell.x, painted_stamp_selection_resolution);
+    int const tile_z = floor_divide(cell.y, painted_stamp_selection_resolution);
+    if (tile_x < 0 || tile_x >= 64 || tile_z < 0 || tile_z >= 64)
+      continue;
+
+    int const local_x = cell.x - tile_x * painted_stamp_selection_resolution;
+    int const local_z = cell.y - tile_z * painted_stamp_selection_resolution;
+    TileIndex const tile_index(static_cast<std::size_t>(tile_x),
+                               static_cast<std::size_t>(tile_z));
+    PaintedStampSelectionPage& page = _painted_stamp_selection_pages[tile_index];
+    if (page.pixels.empty())
+    {
+      page.pixels.resize(static_cast<std::size_t>(painted_stamp_selection_resolution)
+                         * painted_stamp_selection_resolution, 0);
+    }
+
+    std::uint8_t& pixel = page.pixels[static_cast<std::size_t>(local_z)
+        * painted_stamp_selection_resolution + local_x];
+    std::uint8_t const new_value = selected ? 255 : 0;
+    if (pixel == new_value)
+      continue;
+    pixel = new_value;
+    if (selected)
+      ++page.selected_count;
+    else if (page.selected_count)
+      --page.selected_count;
+    for (auto& dirty_region : page.dirty_regions)
+      dirty_region.include(local_x, local_z);
+    page.needs_upload = true;
+  }
 }
 
 void WorldRender::clearPaintedStampSelectionOverlay()
 {
+  for (auto& [tile_index, page] : _painted_stamp_selection_pages)
+  {
+    if (!page.selected_count)
+      continue;
+    std::fill(page.pixels.begin(), page.pixels.end(), 0);
+    page.selected_count = 0;
+    for (auto& dirty_region : page.dirty_regions)
+      dirty_region.includeAll();
+    page.needs_upload = true;
+  }
 }
 
 void WorldRender::preparePaintedStampSelectionOverlay()
 {
+  bool const upload_pending = std::any_of(
+      _painted_stamp_selection_pages.begin(), _painted_stamp_selection_pages.end(),
+      [](auto const& entry)
+      {
+        auto const& page = entry.second;
+        return page.selected_count && page.needs_upload;
+      });
+  if (!upload_pending)
+    return;
+
+  GLint previous_active_texture = GL_TEXTURE0;
+  gl.getIntegerv(GL_ACTIVE_TEXTURE, &previous_active_texture);
+  gl.activeTexture(GL_TEXTURE0 + 4);
+
+  GLint previous_texture = 0;
+  gl.getIntegerv(GL_TEXTURE_BINDING_2D, &previous_texture);
+
+  for (auto& [tile_index, page] : _painted_stamp_selection_pages)
+  {
+    if (!page.selected_count || !page.needs_upload)
+      continue;
+
+    int const upload_index = page.displayed_texture < 0
+        ? 0 : 1 - page.displayed_texture;
+    GLuint& texture = page.textures[upload_index];
+    if (!texture)
+      gl.genTextures(1, &texture);
+    gl.bindTexture(GL_TEXTURE_2D, texture);
+
+    auto& dirty_region = page.dirty_regions[upload_index];
+    if (!page.uploaded[upload_index])
+    {
+      gl.texImage2D(GL_TEXTURE_2D, 0, GL_R8, painted_stamp_selection_resolution,
+                    painted_stamp_selection_resolution, 0, GL_RED, GL_UNSIGNED_BYTE,
+                    page.pixels.data());
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      page.uploaded[upload_index] = true;
+    }
+    else if (dirty_region.pending())
+    {
+      int const width = dirty_region.max_x - dirty_region.min_x + 1;
+      int const height = dirty_region.max_z - dirty_region.min_z + 1;
+      int const padded_width = (width + 3) & ~3;
+      std::vector<std::uint8_t> patch(static_cast<std::size_t>(padded_width) * height, 0);
+      for (int row = 0; row < height; ++row)
+      {
+        auto const source = page.pixels.begin()
+            + static_cast<std::size_t>(dirty_region.min_z + row)
+                * painted_stamp_selection_resolution + dirty_region.min_x;
+        std::copy_n(source, width,
+                    patch.begin() + static_cast<std::size_t>(row) * padded_width);
+      }
+      gl.texSubImage2D(GL_TEXTURE_2D, 0, dirty_region.min_x, dirty_region.min_z,
+                       width, height, GL_RED, GL_UNSIGNED_BYTE, patch.data());
+    }
+
+    dirty_region.clear();
+    page.displayed_texture = upload_index;
+    page.needs_upload = false;
+  }
+
+  gl.bindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_texture));
+  gl.activeTexture(static_cast<GLenum>(previous_active_texture));
+  OpenGL::texture::current_active_texture =
+      static_cast<std::size_t>(previous_active_texture - GL_TEXTURE0);
+}
+
+bool WorldRender::bindPaintedStampSelectionOverlay(TileIndex const& tile_index)
+{
+  auto found = _painted_stamp_selection_pages.find(tile_index);
+  if (found == _painted_stamp_selection_pages.end() || !found->second.selected_count
+      || found->second.displayed_texture < 0)
+    return false;
+
+  PaintedStampSelectionPage& page = found->second;
+  gl.activeTexture(GL_TEXTURE0 + 4);
+  OpenGL::texture::current_active_texture = 4;
+  gl.bindTexture(GL_TEXTURE_2D, page.textures[page.displayed_texture]);
+  return true;
+}
+
+// in-editor detail-doodad live preview (ported from Noggit Azure)
+void WorldRender::setDetailDoodadPreview(Noggit::DetailDoodadPreview preview)
+{
+  _detail_doodad_preview = std::move(preview);
+  Noggit::DetailDoodads::bumpDbcStamp();
+}
+
+void WorldRender::clearDetailDoodadPreview()
+{
+  if (!_detail_doodad_preview.enabled)
+  {
+    return;
+  }
+  _detail_doodad_preview = {};
+  Noggit::DetailDoodads::bumpDbcStamp();
 }
 
 void WorldRender::updateTerrainParamsUniformBlock()

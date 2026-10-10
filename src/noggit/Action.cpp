@@ -3,6 +3,7 @@
 #include "Action.hpp"
 #include <noggit/ChunkWater.hpp>
 #include <noggit/ContextObject.hpp>
+#include <noggit/DBC.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapView.h>
 #include <noggit/SceneObject.hpp>
@@ -248,6 +249,50 @@ void Noggit::Action::undo(bool redo)
         }
       }
     }
+  }
+  if (_flags & ActionFlags::eSKY_TRANSFORMED)
+  {
+    auto& cache = redo ? _transformed_sky_post : _transformed_sky_pre;
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (auto const& entry : cache)
+    {
+      if (Sky* sky = skies->findSkyById(entry.id))
+      {
+        sky->pos = entry.pos;
+        sky->r1 = entry.inner_radius;
+        sky->r2 = entry.outer_radius;
+        sky->save_light_record();
+        _map_view->setDbcDirty(&gLightDB);
+      }
+    }
+    skies->force_update();
+    _map_view->invalidate();
+  }
+  if (_flags & ActionFlags::eSKY_ADDED)
+  {
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (Sky const& sky : _added_skies)
+    {
+      if (redo)
+        skies->restoreSky(sky);
+      else
+        skies->deleteSkyById(sky.Id);
+    }
+    _map_view->setDbcDirty(&gLightDB);
+    _map_view->invalidate();
+  }
+  if (_flags & ActionFlags::eSKY_REMOVED)
+  {
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (Sky const& sky : _removed_skies)
+    {
+      if (redo)
+        skies->deleteSkyById(sky.Id);
+      else
+        skies->restoreSky(sky);
+    }
+    _map_view->setDbcDirty(&gLightDB);
+    _map_view->invalidate();
   }
 
 }
@@ -580,6 +625,16 @@ void Noggit::Action::finish()
           post.second = trigger;
         }
       }
+    }
+  }
+  if (_flags & ActionFlags::eSKY_TRANSFORMED)
+  {
+    _transformed_sky_post.clear();
+    auto& skies = _map_view->getWorld()->renderer()->skies();
+    for (auto const& pre : _transformed_sky_pre)
+    {
+      if (Sky* sky = skies->findSkyById(pre.id))
+        _transformed_sky_post.push_back({ sky->Id, sky->pos, sky->r1, sky->r2 });
     }
   }
 
@@ -916,6 +971,36 @@ void Noggit::Action::registerAreaTriggerTransformed(area_trigger* trigger)
   }
 
   _transformed_area_trigger_pre.emplace_back(trigger->id, *trigger);
+}
+
+void Noggit::Action::registerSkyTransformed(Sky* sky)
+{
+  _flags |= ActionFlags::eSKY_TRANSFORMED;
+  for (auto const& entry : _transformed_sky_pre)
+  {
+    if (entry.id == sky->Id)
+      return;
+  }
+
+  _transformed_sky_pre.push_back({ sky->Id, sky->pos, sky->r1, sky->r2 });
+}
+
+void Noggit::Action::registerSkyAdded(Sky* sky)
+{
+  if (!sky)
+    return;
+
+  _flags |= ActionFlags::eSKY_ADDED;
+  _added_skies.push_back(*sky);
+}
+
+void Noggit::Action::registerSkyRemoved(Sky* sky)
+{
+  if (!sky)
+    return;
+
+  _flags |= ActionFlags::eSKY_REMOVED;
+  _removed_skies.push_back(*sky);
 }
 
 Noggit::Action::~Action()

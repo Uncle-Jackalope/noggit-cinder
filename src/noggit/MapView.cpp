@@ -2873,6 +2873,11 @@ void MapView::paintGL()
   OpenGL::context::scoped_setter const _(::gl, context());
   makeCurrent();
 
+  // Upload painted-selection mask changes before clearing the frame. The renderer
+  // double-buffers these textures so the upload never overwrites the texture that the
+  // previous terrain frame may still be sampling.
+  _world->renderer()->preparePaintedStampSelectionOverlay();
+
   gl.clear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   {
@@ -2885,7 +2890,7 @@ void MapView::paintGL()
 
   _last_update = now;
 
-  if (_gizmo_on.get() && _world->has_selection())
+  if (_gizmo_on.get() && (_world->has_selection() || get_editing_mode() == editing_mode::light))
   {
     ImGui::SetCurrentContext(_imgui_context);
     QtImGui::newFrame();
@@ -2899,18 +2904,24 @@ void MapView::paintGL()
     // auto mv = model_view();
     // auto proj = projection();
 
-    _transform_gizmo.setCurrentGizmoOperation(_gizmo_operation);
-    _transform_gizmo.setCurrentGizmoMode(_gizmo_mode);
-    _transform_gizmo.setUseMultiselectionPivot(activeTool()->useMultiselectionPivot());
+    // Object transform gizmo only when there's a real World selection; a selected SKY
+    // (light tool) is a Skies-level selection, so guard this against an empty selection.
+    if (_world->has_selection())
+    {
+      _transform_gizmo.setCurrentGizmoOperation(_gizmo_operation);
+      _transform_gizmo.setCurrentGizmoMode(_gizmo_mode);
+      _transform_gizmo.setUseMultiselectionPivot(activeTool()->useMultiselectionPivot());
 
-    auto pivot = _world->multi_select_pivot().has_value() ?
-        _world->multi_select_pivot().value() : glm::vec3(0.f, 0.f, 0.f);
+      auto pivot = _world->multi_select_pivot().has_value() ?
+          _world->multi_select_pivot().value() : glm::vec3(0.f, 0.f, 0.f);
 
-    _transform_gizmo.setMultiselectionPivot(pivot);
+      _transform_gizmo.setMultiselectionPivot(pivot);
 
-    _transform_gizmo.handleTransformGizmo(this, _world->current_selection(), _model_view, _projection);
+      _transform_gizmo.handleTransformGizmo(this, _world->current_selection(), _model_view, _projection);
+    }
 
     // _world->update_selection_pivot();
+    // LightTool::renderImGui early-returns when no sky is selected.
     activeTool()->renderImGui(_gizmo_mode, _gizmo_operation);
 
     ImGui::End();
@@ -3716,6 +3727,7 @@ void MapView::draw_map()
   renderParams.render_select_m2_collission_bbox = _render_m2_collission_bbox;
   renderParams.render_select_wmo_aabb = _render_wmo_aabb;
   renderParams.render_select_wmo_groups_bounds = _render_wmo_groups_bounds;
+  renderParams.show_painted_stamp_selection = draw_parameters.show_painted_stamp_selection;
 
   _world->renderer()->draw (
                   _model_view
