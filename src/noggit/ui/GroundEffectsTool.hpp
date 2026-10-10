@@ -5,6 +5,11 @@
 #include <noggit/DBCFile.h>
 #include <noggit/TileIndex.hpp>
 
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <glm/vec3.hpp>
 #include <QtWidgets/QWidget>
 
 class World;
@@ -14,6 +19,7 @@ class QButtonGroup;
 class QCheckBox;
 class QComboBox;
 class QGroupBox;
+class QLabel;
 class QListWidget;
 class QRadioButton;
 class QSpinBox;
@@ -49,6 +55,7 @@ namespace Noggit
     {
     public:
       void load_from_id(unsigned int effect_id);
+      void rebuild_name();
 
       bool empty() const;;
 
@@ -107,6 +114,10 @@ namespace Noggit
       void change_radius(float change);;
 
       void unload();
+      std::optional<unsigned int> sampleEffectAt(glm::vec3 const& pos);
+
+    signals:
+      void activeEffectChanged(unsigned int id, QString const& name);
 
     private:
       std::optional<ground_effect_set> getSelectedGroundEffect();
@@ -116,8 +127,28 @@ namespace Noggit
       void scanTileForEffects(TileIndex tile_index);
       void updateSetsList();
       void genEffectColors();
+      void createNewSet();
+      void duplicateSelectedSet();
+      void deleteSelectedSet();
+      void saveSelectedSet();
+      void loadProjectSetRegistry();
+      void saveProjectSetRegistry();
+      void mergeProjectSetsIntoLoaded();
+      void loadBlizzardGroundEffectIds();
+      void updateBlizzardAssignmentsCombo();
+      void selectBlizzardGroundEffect(int combo_index);
+      void updateWeightShares();
+      void updateLivePreview();
+      void applySelectedSet();
+      void clearEffectsAtScope();
+      void applyEffectIdAtScope(std::string const& texture, unsigned int effect_id,
+                                bool override_existing, QString const& global_confirm,
+                                std::optional<unsigned int> only_effect_id = std::nullopt);
 
       std::vector<ground_effect_set> _loaded_effects;
+      std::vector<unsigned int> _project_set_ids;
+      unsigned int _last_selected_set_id = 0;
+      std::unordered_map<std::string, std::vector<unsigned int>> _blizzard_ground_effect_ids;
       // Store them for faster iteration on duplicates.
       std::unordered_map<unsigned int, ground_effect_set> _ground_effect_cache;
       std::vector<glm::vec3> _effects_colors;
@@ -140,7 +171,14 @@ namespace Noggit
       // For render previews.
       QListWidget* _object_list;
       // Weight and percentage customization.
-      QListWidget* _weight_list;
+      QSpinBox* _weight_spinboxes[4] = {};
+      QLabel* _weight_share_labels[4] = {};
+      QComboBox* _blizzard_assignments_combo = nullptr;
+      QCheckBox* _live_preview_cb = nullptr;
+      QComboBox* _clear_target_combo = nullptr;
+      QCheckBox* _scope_disk_sweep_cb = nullptr;
+      // 0 = loaded zone, 1 = loaded area, 2 = ADT, 3 = global (pending port), 4 = chunk.
+      QButtonGroup* _generate_type_group = nullptr;
       QSpinBox* _spinbox_doodads_amount;
       QComboBox* _cbbox_terrain_type;
       QCheckBox* _apply_override_cb;

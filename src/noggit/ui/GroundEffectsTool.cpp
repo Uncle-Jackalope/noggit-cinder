@@ -1,4 +1,26 @@
-﻿#include <noggit/DBC.h>
+﻿#include <noggit/ActionManager.hpp>
+#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/DetailDoodads.hpp>
+#include <noggit/project/CurrentProject.hpp>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <limits>
+#include <unordered_set>
+#include <QDialog>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QMenu>
+#include <QMessageBox>
+#include <QSaveFile>
+#include <QSignalBlocker>
+#include <QGridLayout>
+#include <QHBoxLayout>
+#include <noggit/DBC.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/MapView.h>
@@ -29,6 +51,60 @@
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSpinBox>
 #include <QVBoxLayout>
+
+namespace
+{
+    std::string normalizedTextureName(std::string name)
+    {
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c)
+            { return static_cast<char>(std::tolower(c)); });
+        std::replace(name.begin(), name.end(), '\\', '/');
+        return name;
+    }
+    constexpr char const* STRING_EMPTY_TEXTURE = "tileset\\generic\\black.blp";
+
+    constexpr char const* STRING_DISK_SWEEP_WARNING = "Full-map disk assignment is not available in this port.";
+    QString normalizedDoodadFilename(QString name)
+    {
+        name = name.toLower();
+        name.replace(".mdx", ".m2");
+        name.replace(".mdl", ".m2");
+        return name;
+    }
+
+    // Returns the id of the GroundEffectDoodad record for this filename,
+    // creating the record if no existing one matches.
+    unsigned int findOrCreateGroundEffectDoodad(std::string const& filename)
+    {
+        QString const wanted = normalizedDoodadFilename(QString(filename.c_str()));
+
+        for (auto it = gGroundEffectDoodadDB.begin(); it != gGroundEffectDoodadDB.end(); ++it)
+        {
+            if (normalizedDoodadFilename(QString(it->getString(GroundEffectDoodadDB::Filename))) == wanted)
+            {
+                return it->getUInt(GroundEffectDoodadDB::ID);
+            }
+        }
+
+        int const new_id = gGroundEffectDoodadDB.getEmptyRecordID();
+        auto record = gGroundEffectDoodadDB.addRecord(new_id);
+        record.writeString(GroundEffectDoodadDB::Filename, filename);
+        return static_cast<unsigned int>(new_id);
+    }
+    // AreaTable's parent field is shared by vanilla and Azure; keep this adapter local.
+    unsigned int groundEffectZoneId(unsigned int area)
+    {
+        std::unordered_set<unsigned int> visited;
+        while (area && visited.insert(area).second && gAreaDB.CheckIfIdExists(area))
+        {
+            unsigned int const parent = gAreaDB.getByID(area).getUInt(AreaDB::Region);
+            if (!parent) break;
+            area = parent;
+        }
+        return area;
+    }
+
+}
 
 namespace Noggit
 {
@@ -97,13 +173,37 @@ namespace Noggit
             auto selection_layout(new QVBoxLayout(selection_group));
             selection_group->setLayout(selection_layout);
 
-            auto button_create_new = new QPushButton("Create New", this);
-            selection_layout->addWidget(button_create_new);
+            selection_layout->addWidget(new QLabel("Blizzard Ground Effects", this));
+            _blizzard_assignments_combo = new QComboBox(this);
+            _blizzard_assignments_combo->addItem("Choose a Blizzard ground effect...");
+            _blizzard_assignments_combo->setEnabled(false);
+            _blizzard_assignments_combo->setToolTip(
+                "Choose an effect Blizzard used with the current terrain texture. "
+                "This only changes the editor selection; it does not apply anything to terrain.");
+            selection_layout->addWidget(_blizzard_assignments_combo);
 
-            auto _cbbox_effect_sets = new QComboBox(this);
-            _cbbox_effect_sets->addItem("Noggit Default");
-            _cbbox_effect_sets->setItemData(0, QVariant(0)); // index = _cbbox_effect_sets->count()
-            selection_layout->addWidget(_cbbox_effect_sets);
+            auto set_buttons_widget = new QWidget(this);
+            auto set_buttons_layout = new QHBoxLayout(set_buttons_widget);
+            set_buttons_layout->setContentsMargins(0, 0, 0, 0);
+            selection_layout->addWidget(set_buttons_widget);
+
+            auto button_create_new = new QPushButton("Create New", this);
+            set_buttons_layout->addWidget(button_create_new);
+
+            auto button_duplicate = new QPushButton("Duplicate", this);
+            button_duplicate->setToolTip("Copies the selected set into a new unsaved set to edit from.");
+            set_buttons_layout->addWidget(button_duplicate);
+
+            auto button_delete = new QPushButton("Delete", this);
+            button_delete->setToolTip("Removes the selected set's GroundEffectTexture record from the dbc.\
+            \nChunks still referencing the id simply spawn nothing, like the client with a missing record.");
+            set_buttons_layout->addWidget(button_delete);
+
+            connect(button_create_new, &QPushButton::clicked, [this]() { createNewSet(); });
+            connect(button_duplicate, &QPushButton::clicked, [this]() { duplicateSelectedSet(); });
+            connect(button_delete, &QPushButton::clicked, [this]() { deleteSelectedSet(); });
+            connect(_blizzard_assignments_combo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &GroundEffectsTool::selectBlizzardGroundEffect);
 
             _effect_sets_list = new QListWidget(this);
             selection_layout->addWidget(_effect_sets_list);
@@ -149,18 +249,42 @@ namespace Noggit
                     _object_list->addItem(list_item);
                 }
 
-                _weight_list = new QListWidget(this);
-                _weight_list->setItemAlignment(Qt::AlignLeft | Qt::AlignTop);
-                _weight_list->setFlow(QListWidget::LeftToRight);
-                _weight_list->setMovement(QListView::Movement::Static);
-                _weight_list->setSelectionMode(QAbstractItemView::NoSelection);
-                _weight_list->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
-                _weight_list->setMinimumWidth(450);
-                _weight_list->setFixedHeight(120);
-                _weight_list->setVisible(true);
-                QString styleSheet = "QListWidget::item { padding-right: 6px; border: 1px solid darkGray;}";
-                _weight_list->setStyleSheet(styleSheet);
-                settings_layout->addRow(_weight_list);
+                // One weight per doodad slot, aligned under the icons.
+                auto weights_widget = new QWidget(this);
+                auto weights_layout = new QHBoxLayout(weights_widget);
+                weights_layout->setContentsMargins(0, 0, 0, 0);
+                for (int i = 0; i < 4; i++)
+                {
+                    _weight_spinboxes[i] = new QSpinBox(this);
+                    _weight_spinboxes[i]->setRange(0, 100);
+                    _weight_spinboxes[i]->setValue(1);
+                    _weight_spinboxes[i]->setPrefix("Weight : ");
+                    _weight_spinboxes[i]->setToolTip("Relative chance of this doodad being picked for a placement.");
+                    _weight_spinboxes[i]->setMinimumWidth(90);
+                    weights_layout->addWidget(_weight_spinboxes[i]);
+
+                    connect(_weight_spinboxes[i], qOverload<int>(&QSpinBox::valueChanged),
+                        [this](int) { updateWeightShares(); updateLivePreview(); });
+                }
+                weights_layout->addStretch();
+                settings_layout->addRow(weights_widget);
+
+                // The share of the client's 16-slot spawn table each slot really
+                // gets - weights are not straight percentages.
+                auto shares_widget = new QWidget(this);
+                auto shares_layout = new QHBoxLayout(shares_widget);
+                shares_layout->setContentsMargins(0, 0, 0, 0);
+                for (int i = 0; i < 4; i++)
+                {
+                    _weight_share_labels[i] = new QLabel("-", this);
+                    _weight_share_labels[i]->setAlignment(Qt::AlignHCenter);
+                    _weight_share_labels[i]->setToolTip("The slot's actual share of the client's 16-entry spawn table\
+                    \nbuilt from the weights. \"empty\" table entries spawn nothing.");
+                    _weight_share_labels[i]->setFixedWidth(_object_list->iconSize().width());
+                    shares_layout->addWidget(_weight_share_labels[i]);
+                }
+                shares_layout->addStretch();
+                settings_layout->addRow(shares_widget);
 
                 _preview_renderer = new Tools::PreviewRenderer(_object_list->iconSize().width(),
                     _object_list->iconSize().height(),
@@ -201,13 +325,14 @@ namespace Noggit
                 {
                     auto terrain_type_record = *it;
 
-                    _cbbox_terrain_type->addItem(QString(terrain_type_record.getString(TerrainTypeDB::TerrainDesc)));
-                    _cbbox_terrain_type->setItemData(_cbbox_terrain_type->count(), QVariant(terrain_type_record.getUInt(TerrainTypeDB::TerrainId)));
+                    _cbbox_terrain_type->addItem(QString(terrain_type_record.getString(TerrainTypeDB::TerrainDesc)),
+                        QVariant(terrain_type_record.getUInt(TerrainTypeDB::TerrainId)));
                 }
 
                 auto button_save_settings = new QPushButton("Save Set", this);
                 settings_layout->addRow(button_save_settings);
                 button_save_settings->setBaseSize(button_save_settings->size() / 2.0);
+                connect(button_save_settings, &QPushButton::clicked, this, &GroundEffectsTool::saveSelectedSet);
             }
 
 
@@ -223,26 +348,34 @@ namespace Noggit
                 auto buttons_layout(new QGridLayout(this));
                 apply_layout->addLayout(buttons_layout);
 
-                auto generate_type_group = new QButtonGroup(apply_group);
+                _generate_type_group = new QButtonGroup(apply_group);
 
                 auto generate_effect_zone = new QRadioButton("Current Zone", this);
-                generate_type_group->addButton(generate_effect_zone);
+                _generate_type_group->addButton(generate_effect_zone, 0);
                 buttons_layout->addWidget(generate_effect_zone, 0, 0);
 
                 auto generate_effect_area = new QRadioButton("Current Area (Subzone)", this);
-                generate_type_group->addButton(generate_effect_area);
+                _generate_type_group->addButton(generate_effect_area, 1);
                 buttons_layout->addWidget(generate_effect_area, 0, 1);
 
                 auto generate_effect_adt = new QRadioButton("Current ADT (Tile)", this);
-                generate_type_group->addButton(generate_effect_adt);
+                _generate_type_group->addButton(generate_effect_adt, 2);
                 buttons_layout->addWidget(generate_effect_adt, 1, 0);
 
                 auto generate_effect_global = new QRadioButton("Global (Entire Map)", this);
-                generate_type_group->addButton(generate_effect_global);
+                _generate_type_group->addButton(generate_effect_global, 3);
                 buttons_layout->addWidget(generate_effect_global, 1, 1);
 
-                generate_effect_zone->setChecked(true);
-                generate_effect_zone->setAutoExclusive(true);
+                generate_effect_zone->setToolTip("Affects loaded tiles in the zone; undoable.");
+                generate_effect_area->setToolTip("Affects loaded tiles in the area; undoable.");
+                // TODO(azure-port): full-map disk sweep needs World::applyGroundEffectGlobal.
+                generate_effect_global->setEnabled(false);
+                generate_effect_global->setToolTip("Full-map disk assignment is not available yet.");
+                auto generate_effect_chunk = new QRadioButton("Current Chunk", this);
+                _generate_type_group->addButton(generate_effect_chunk, 4);
+                buttons_layout->addWidget(generate_effect_chunk, 2, 0);
+                generate_effect_chunk->setToolTip("The chunk under the camera; undoable.");
+                generate_effect_adt->setChecked(true);
             }
 
             _apply_override_cb = new QCheckBox("Override", this);
@@ -252,6 +385,45 @@ namespace Noggit
 
             auto button_generate = new QPushButton("Apply to Texture", this);
             apply_layout->addWidget(button_generate);
+            connect(button_generate, &QPushButton::clicked, this, &GroundEffectsTool::applySelectedSet);
+
+            _scope_disk_sweep_cb = new QCheckBox("Include unloaded tiles (disk sweep)", this);
+            // TODO(azure-port): area/zone disk sweep needs World::applyGroundEffectGlobal.
+            _scope_disk_sweep_cb->setEnabled(false);
+            _scope_disk_sweep_cb->setToolTip("Unloaded-tile assignment is not available yet.");
+            apply_layout->addWidget(_scope_disk_sweep_cb);
+
+            auto preview_group = new QGroupBox("Detail Doodad Preview", this);
+            right_side_layout->addWidget(preview_group);
+            auto preview_layout = new QVBoxLayout(preview_group);
+            auto render_doodads = new QCheckBox("Render detail doodads", this);
+            render_doodads->setEnabled(false);
+            render_doodads->setToolTip("Renderer controls are not available in this version yet.");
+            preview_layout->addWidget(render_doodads);
+            // TODO(azure-port): WorldRender's enable/density/distance fields are private;
+            // add public setters preserving Cinder's opt-in and exception-disable behavior.
+            // The public preview API below works when the renderer is already enabled.
+            _live_preview_cb = new QCheckBox("Preview working set on selected texture", this);
+            _live_preview_cb->setChecked(true);
+            _live_preview_cb->setToolTip("Previews these settings when detail-doodad rendering is enabled; the ADT and DBC are unchanged.");
+            preview_layout->addWidget(_live_preview_cb);
+            connect(_live_preview_cb, &QCheckBox::toggled, this, [this](bool) { updateLivePreview(); });
+            connect(_spinbox_doodads_amount, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this](int) { updateLivePreview(); });
+
+            _clear_target_combo = new QComboBox(this);
+            _clear_target_combo->addItem("Selected effect ID (all textures)", 0);
+            _clear_target_combo->addItem("Selected terrain texture (all IDs)", 1);
+            _clear_target_combo->addItem("All effects", 2);
+            apply_layout->addWidget(_clear_target_combo);
+            auto button_clear = new QPushButton("Clear Effects", this);
+            apply_layout->addWidget(button_clear);
+            connect(button_clear, &QPushButton::clicked, this, &GroundEffectsTool::clearEffectsAtScope);
+
+            auto button_sample = new QPushButton("Sample effect at cursor", this);
+            selection_layout->addWidget(button_sample);
+            connect(button_sample, &QPushButton::clicked, this,
+                [this]() { sampleEffectAt(_map_view->cursorPosition()); });
 
             // Brush modes.
             {
@@ -353,39 +525,19 @@ namespace Noggit
                 }
             );
 
-            connect(_cbbox_effect_sets, qOverload<int>(&QComboBox::currentIndexChanged)
-                , [=](int index)
-                {
-                    // unsigned int effect_id = _cbbox_effect_sets->currentData().toUInt();
-
-                    // TODO
-                    // if (effect_id)
-                    if (_loaded_effects.empty() || !_cbbox_effect_sets->count() || index == -1)
-                    {
-                        return;
-                    }
-
-                    auto effect = _loaded_effects[index];
-                    setActiveGroundEffect(effect);
-                    QPalette pal = _cbbox_effect_sets->palette();
-                    pal.setColor(_cbbox_effect_sets->backgroundRole(), QColor::fromRgbF(_effects_colors[index].r, _effects_colors[index].g, _effects_colors[index].b));
-                    _cbbox_effect_sets->setPalette(pal);
-                });
             QObject::connect(_effect_sets_list, &QListWidget::itemSelectionChanged, [this]()
               {
-                    int index = _effect_sets_list->currentIndex().row();
-
                     auto effect = getSelectedGroundEffect();
                     if (!effect.has_value())
                     {
+                        updateLivePreview();
                         return;
-                    } 
+                    }
                     setActiveGroundEffect(effect.value());
-
-                    // _cbbox_effect_sets->setStyleSheet
-                    // QPalette pal = _effect_sets_list->palette();
-                    // pal.setColor(_effect_sets_list->backgroundRole(), QColor::fromRgbF(_effects_colors[index].r, _effects_colors[index].g, _effects_colors[index].b));
-                    // _effect_sets_list->setPalette(pal);
+                    _last_selected_set_id = effect->ID;
+                    saveProjectSetRegistry();
+                    updateLivePreview();
+                    emit activeEffectChanged(effect->ID, QString::fromStdString(effect->Name));
                 });
 
             // TODO fix this shit
@@ -408,10 +560,35 @@ namespace Noggit
                 }
             );
 
+            _object_list->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(_object_list, &QWidget::customContextMenuRequested, this, [=](QPoint const& pos)
+                {
+                    QListWidgetItem* item = _object_list->itemAt(pos);
+                    if (!item)
+                        return;
+
+                    QMenu menu(_object_list);
+                    QAction* clear_action = menu.addAction("Clear slot");
+                    if (menu.exec(_object_list->mapToGlobal(pos)) == clear_action)
+                    {
+                        item->setText(STRING_EMPTY_DISPLAY);
+                        item->setToolTip("");
+                        updateDoodadPreviewRender(_object_list->row(item));
+                        updateWeightShares();
+                        updateLivePreview();
+                    }
+                }
+            );
+
             using AssetBrowser = Noggit::Ui::Tools::AssetBrowser::Ui::AssetBrowserWidget;
             connect(map_view->getAssetBrowserWidget(), &AssetBrowser::selectionChanged, this, [=](std::string const& path) {
                 if (isVisible()) setDoodadSlotFromBrowser(path.c_str());
                 });
+
+            loadBlizzardGroundEffectIds();
+            loadProjectSetRegistry();
+            updateSetsList();
+            updateBlizzardAssignmentsCombo();
         }
 
         void GroundEffectsTool::updateTerrainUniformParams()
@@ -435,7 +612,8 @@ namespace Noggit
 
         void GroundEffectsTool::scanTileForEffects(TileIndex tile_index)
         {
-            std::string active_texture = _texturing_tool->_current_texture->filename();
+            std::string active_texture = _texturing_tool->_current_texture
+                ? _texturing_tool->_current_texture->filename() : std::string();
 
             if (active_texture.empty() || active_texture == "tileset\\generic\\black.blp")
             {
@@ -447,6 +625,7 @@ namespace Noggit
             // std::unordered_map<unsigned int, int> texture_effect_ids;
 
             MapTile* tile(_map_view->getWorld()->mapIndex.getTile(tile_index));
+            if (!tile || !tile->finishedLoading()) return;
             for (int x = 0; x < 16; x++)
             {
                 for (int y = 0; y < 16; y++)
@@ -507,36 +686,35 @@ namespace Noggit
 
         void GroundEffectsTool::updateSetsList()
         {
-            _effect_sets_list->clear();
-            genEffectColors();
-
-            int count = 0;
-            for (auto& effect_set : _loaded_effects)
+            mergeProjectSetsIntoLoaded();
+            // Rebuilding the list must not erase the persisted selection through transient signals.
+            int selected_row = 0;
+            if (_last_selected_set_id)
             {
-                // We already check for id validity earlier
-                unsigned int tex_ge_id = effect_set.ID;
-                QColor color = QColor::fromRgbF(_effects_colors[count].r, _effects_colors[count].g, _effects_colors[count].b);
-                QListWidgetItem* list_item = new QListWidgetItem(effect_set.Name.c_str());
-                _effect_sets_list->addItem(list_item);
-                list_item->setBackgroundColor(color);
-                QPixmap pixmap(_effect_sets_list->iconSize());
-                pixmap.fill(color);
-                QIcon icon(pixmap);
-                list_item->setIcon(icon);
-                count++;
+                for (int row = 0; row < static_cast<int>(_loaded_effects.size()); ++row)
+                    if (_loaded_effects[row].ID == _last_selected_set_id) { selected_row = row; break; }
             }
-
-            auto first_item = _effect_sets_list->itemAt(0, 0);
-            if (_effect_sets_list->count() && first_item)
             {
-                _effect_sets_list->setCurrentItem(first_item);
-                auto effect = getSelectedGroundEffect();
-                if (!effect.has_value())
+                QSignalBlocker const blocker(_effect_sets_list);
+                _effect_sets_list->clear();
+                genEffectColors();
+                for (int row = 0; row < static_cast<int>(_loaded_effects.size()); ++row)
                 {
-                    return;
+                    auto const& set = _loaded_effects[row];
+                    auto const& rgb = _effects_colors[row];
+                    QColor const color = QColor::fromRgbF(rgb.r, rgb.g, rgb.b);
+                    auto item = new QListWidgetItem(QString::fromStdString(set.Name), _effect_sets_list);
+                    item->setBackground(color);
+                    QPixmap pixmap(_effect_sets_list->iconSize());
+                    pixmap.fill(color);
+                    item->setIcon(QIcon(pixmap));
                 }
-                setActiveGroundEffect(effect.value());
+                if (!_loaded_effects.empty()) _effect_sets_list->setCurrentRow(selected_row);
             }
+            auto const effect = getSelectedGroundEffect();
+            setActiveGroundEffect(effect.value_or(ground_effect_set{}));
+            emit activeEffectChanged(effect ? effect->ID : 0,
+                effect ? QString::fromStdString(effect->Name) : QString());
         }
 
         void GroundEffectsTool::genEffectColors()
@@ -556,15 +734,12 @@ namespace Noggit
                 _effects_colors.push_back(glm::vec3(r, g, b));
             }
 
-            std::string active_texture = _texturing_tool->_current_texture->filename();
+            std::string active_texture = _texturing_tool->_current_texture
+                ? _texturing_tool->_current_texture->filename() : std::string();
             // Check in loop instead to clear data everytime.
-            if (active_texture.empty() || active_texture == "tileset\\generic\\black.blp")
-            {
-                return;
-            } 
-
             for (MapTile* tile : _map_view->getWorld()->mapIndex.loaded_tiles())
             {
+                if (!tile || !tile->finishedLoading()) continue;
                 tile->renderer()->setActiveRenderGEffectTexture(active_texture);
                 for (int x = 0; x < 16; x++)
                 {
@@ -640,18 +815,34 @@ namespace Noggit
 
         void GroundEffectsTool::TextureChanged()
         {
-            // TODO : Maybe load saved sets for the new texture.
             _loaded_effects.clear();
             _ground_effect_cache.clear();
-            updateSetsList();
 
+            // Establish empty-editor defaults before selecting a scanned set.
+            // updateSetsList() then loads the selected record's real values.
             _spinbox_doodads_amount->setValue(8);
             _cbbox_terrain_type->setCurrentIndex(0);
-
             for (int i = 0; i < 4; i++)
             {
+                _weight_spinboxes[i]->setValue(1);
+                _object_list->item(i)->setText(STRING_EMPTY_DISPLAY);
                 updateDoodadPreviewRender(i);
             }
+
+            // Keep the set list in sync with what the user can currently see.
+            // Project sets are merged by updateSetsList().
+            for (MapTile* tile : _map_view->getWorld()->mapIndex.loaded_tiles())
+            {
+                if (tile && tile->finishedLoading())
+                {
+                    scanTileForEffects(tile->index);
+                }
+            }
+            updateSetsList();
+            updateBlizzardAssignmentsCombo();
+
+            updateWeightShares();
+            updateLivePreview();
         }
 
         bool GroundEffectsTool::render_active_sets_overlay() const
@@ -687,41 +878,72 @@ namespace Noggit
             _map_view->getWorld()->renderer()->markTerrainParamsUniformBlockDirty();
           }
 
+          if (_map_view->_world) _map_view->getWorld()->renderer()->clearDetailDoodadPreview();
           QWidget::hideEvent(event);
         }
 
         void GroundEffectsTool::setDoodadSlotFromBrowser(QString doodad_path)
         {
-            const QFileInfo info(doodad_path);
-            const QString filename(info.fileName());
+            // the dbc stores a bare filename that the client resolves under
+            // world/nodxt/detail/ (hardcoded prefix) - a model anywhere else
+            // could never render, in noggit or in game
+            QString normalized = doodad_path;
+            normalized.replace('\\', '/');
+            if (!normalized.startsWith("world/nodxt/detail/", Qt::CaseInsensitive))
+            {
+                QMessageBox::warning(this, "Ground Effect Doodad"
+                    , "Detail doodads must be models under world\\nodxt\\detail\\.\nThe client resolves the dbc filename relative to that folder, so this model would never render.");
+                return;
+            }
 
-            // _button_effect_doodad[active_doodad_widget]->setText(filename);
+            const QFileInfo info(normalized);
+            const QString filename(info.fileName());
 
             if (_object_list->currentItem())
                 _object_list->currentItem()->setText(filename);
 
-            // _object_list->item(active_doodad_widget)->setText(filename);
-
             updateDoodadPreviewRender(_object_list->currentRow());
+            updateWeightShares();
+            updateLivePreview();
         }
 
         void GroundEffectsTool::updateDoodadPreviewRender(int slot_index)
         {
             QListWidgetItem* list_item = _object_list->item(slot_index);
+            if (!list_item || !_preview_renderer) // item(-1) when nothing is selected
+            {
+                return;
+            }
 
             QString filename = list_item->text();
+            filename.replace(".mdx", ".m2", Qt::CaseInsensitive);
+            filename.replace(".mdl", ".m2", Qt::CaseInsensitive);
+            list_item->setText(filename);
 
             if (filename.isEmpty() || filename == STRING_EMPTY_DISPLAY)
             {
                 list_item->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::plus));
+                list_item->setToolTip("");
             }
             else
             {
-                // Load preview render.
+                // Load preview render. A few stock records reference models that
+                // no longer ship (dead Tirisfal/Silverpine/Arathi entries) - a
+                // failed render must not abort filling the other slots
                 QString filepath(("world/nodxt/detail/" + filename.toStdString()).c_str());
-                _preview_renderer->setModelOffscreen(filepath.toStdString());
-                list_item->setIcon(*_preview_renderer->renderToPixmap());
-                list_item->setToolTip(filepath);
+                try
+                {
+                    _preview_renderer->setModelOffscreen(filepath.toStdString());
+                    list_item->setIcon(*_preview_renderer->renderToPixmap());
+                    list_item->setToolTip(filepath);
+                }
+                catch (...)
+                {
+                    list_item->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::exclamationtriangle));
+                    list_item->setToolTip(filepath + " (preview render failed)");
+                    LogError << "Ground effect doodad preview render failed for "
+                        << filepath.toStdString() << std::endl;
+                }
             }
         }
 
@@ -772,18 +994,20 @@ namespace Noggit
         void GroundEffectsTool::delete_renderer()
         {
           delete _preview_renderer;
+          _preview_renderer = nullptr;
         }
 
         void GroundEffectsTool::showEvent(QShowEvent* event)
         {
           QWidget::showEvent(event);
           updateTerrainUniformParams();
+          updateLivePreview();
         }
 
         std::optional<ground_effect_set> GroundEffectsTool::getSelectedGroundEffect()
         {
             int index = _effect_sets_list->currentIndex().row();
-            if (_loaded_effects.empty() || !_effect_sets_list->count() || index == -1)
+            if (index < 0 || index >= static_cast<int>(_loaded_effects.size()) || !_effect_sets_list->count())
             {
                 return std::nullopt;
             }
@@ -794,7 +1018,7 @@ namespace Noggit
         std::optional<glm::vec3> GroundEffectsTool::getSelectedEffectColor()
         {
             int index = _effect_sets_list->currentIndex().row();
-            if (_loaded_effects.empty() || !_effect_sets_list->count() || index == -1)
+            if (index < 0 || index >= static_cast<int>(_loaded_effects.size()) || !_effect_sets_list->count())
             {
                 return std::nullopt;
             }
@@ -802,14 +1026,732 @@ namespace Noggit
             return effect_color;
         }
 
-        void GroundEffectsTool::setActiveGroundEffect(ground_effect_set const& effect)
+        void GroundEffectsTool::loadBlizzardGroundEffectIds()
         {
-            // Sets a ground effect to be actively selected in the UI.
-            _spinbox_doodads_amount->setValue(effect.Amount);
-            _cbbox_terrain_type->setCurrentIndex(effect.TerrainType);
+            _blizzard_ground_effect_ids.clear();
+
+            QString const definitions_path = QString::fromStdString(
+                Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath)
+                + "\\GroundEffectIDs.json";
+            QFile file(definitions_path);
+            if (!file.open(QIODevice::ReadOnly))
+            {
+                LogError << "Couldn't load Blizzard ground-effect assignments from "
+                    << definitions_path.toStdString() << std::endl;
+                return;
+            }
+
+            QJsonParseError parse_error;
+            QJsonDocument const document = QJsonDocument::fromJson(file.readAll(), &parse_error);
+            if (parse_error.error != QJsonParseError::NoError || !document.isObject())
+            {
+                LogError << "Couldn't parse Blizzard ground-effect assignments from "
+                    << definitions_path.toStdString() << ": "
+                    << parse_error.errorString().toStdString() << std::endl;
+                return;
+            }
+
+            QJsonObject const root = document.object();
+            for (auto it = root.constBegin(); it != root.constEnd(); ++it)
+            {
+                if (!it.value().isArray())
+                    continue;
+
+                std::vector<unsigned int> effect_ids;
+                for (QJsonValue const& value : it.value().toArray())
+                {
+                    int const effect_id = value.toInt();
+                    if (effect_id > 0)
+                        effect_ids.push_back(static_cast<unsigned int>(effect_id));
+                }
+                _blizzard_ground_effect_ids[normalizedTextureName(it.key().toStdString())]
+                    = std::move(effect_ids);
+            }
+        }
+
+        void GroundEffectsTool::updateBlizzardAssignmentsCombo()
+        {
+            if (!_blizzard_assignments_combo)
+                return;
+
+            QSignalBlocker const blocker(_blizzard_assignments_combo);
+            _blizzard_assignments_combo->clear();
+            _blizzard_assignments_combo->setEnabled(false);
+
+            if (!_texturing_tool->_current_texture)
+            {
+                _blizzard_assignments_combo->addItem("Choose a Blizzard ground effect...");
+                return;
+            }
+
+            std::string const texture = normalizedTextureName(
+                _texturing_tool->_current_texture->filename());
+            auto const assignments = _blizzard_ground_effect_ids.find(texture);
+            if (assignments == _blizzard_ground_effect_ids.end() || assignments->second.empty())
+            {
+                _blizzard_assignments_combo->addItem("No Blizzard assignments found");
+                _blizzard_assignments_combo->setToolTip(
+                    "No Blizzard ground-effect assignments are listed for this texture.");
+                return;
+            }
+
+            _blizzard_assignments_combo->addItem("Choose a Blizzard ground effect...");
+            int compatible_assignments = 0;
+            for (unsigned int const effect_id : assignments->second)
+            {
+                if (!gGroundEffectTextureDB.CheckIfIdExists(effect_id))
+                    continue;
+
+                ground_effect_set effect;
+                effect.load_from_id(effect_id);
+                if (effect.empty())
+                    continue;
+
+                _blizzard_assignments_combo->addItem(
+                    QString::fromStdString(effect.Name), QVariant::fromValue(effect_id));
+                ++compatible_assignments;
+            }
+
+            if (!compatible_assignments)
+            {
+                _blizzard_assignments_combo->clear();
+                _blizzard_assignments_combo->addItem("No compatible assignments for this client");
+                _blizzard_assignments_combo->setToolTip(
+                    "Assignments exist for this texture, but none exist in the current client's "
+                    "GroundEffectTexture.dbc.");
+                return;
+            }
+
+            _blizzard_assignments_combo->setEnabled(true);
+            _blizzard_assignments_combo->setToolTip(
+                "Choose an effect Blizzard used with the current terrain texture. "
+                "This only changes the editor selection; it does not apply anything to terrain.");
+        }
+
+        void GroundEffectsTool::selectBlizzardGroundEffect(int combo_index)
+        {
+            if (!_blizzard_assignments_combo || combo_index <= 0)
+                return;
+
+            bool valid_effect = false;
+            unsigned int const effect_id = _blizzard_assignments_combo->itemData(combo_index)
+                .toUInt(&valid_effect);
+            if (!valid_effect || !effect_id || !gGroundEffectTextureDB.CheckIfIdExists(effect_id))
+                return;
+
+            auto loaded = std::find_if(_loaded_effects.begin(), _loaded_effects.end(),
+                [effect_id](ground_effect_set const& effect) { return effect.ID == effect_id; });
+            if (loaded == _loaded_effects.end())
+            {
+                ground_effect_set effect;
+                effect.load_from_id(effect_id);
+                if (effect.empty())
+                {
+                    QMessageBox::warning(this, "Blizzard ground effect unavailable",
+                        QString("Blizzard ground-effect ID %1 is missing "
+                                "from the current GroundEffectTexture.dbc.")
+                            .arg(effect_id));
+                    return;
+                }
+                _loaded_effects.push_back(effect);
+                updateSetsList();
+            }
+
+            int selected_row = -1;
+            for (int row = 0; row < static_cast<int>(_loaded_effects.size()); ++row)
+            {
+                if (_loaded_effects[row].ID == effect_id)
+                {
+                    selected_row = row;
+                    break;
+                }
+            }
+            if (selected_row < 0)
+                return;
+
+            QSignalBlocker const blocker(_effect_sets_list);
+            _effect_sets_list->setCurrentRow(selected_row);
+            setActiveGroundEffect(_loaded_effects[selected_row]);
+            _last_selected_set_id = effect_id;
+            saveProjectSetRegistry();
+            updateLivePreview();
+            emit activeEffectChanged(effect_id,
+                QString::fromStdString(_loaded_effects[selected_row].Name));
+        }
+
+        void GroundEffectsTool::loadProjectSetRegistry()
+        {
+            _project_set_ids.clear();
+            _last_selected_set_id = 0;
+            QFile file(QString::fromStdString(Noggit::Project::CurrentProject::get()->ProjectPath + "/ground_effect_sets.json"));
+            if (!file.open(QIODevice::ReadOnly)) return;
+            QJsonParseError error;
+            auto const doc = QJsonDocument::fromJson(file.readAll(), &error);
+            if (error.error != QJsonParseError::NoError || !doc.isObject())
+            {
+                LogError << "Couldn't parse the project ground effect set registry: "
+                    << error.errorString().toStdString() << std::endl;
+                return;
+            }
+            auto const registry = doc.object();
+            int const selected_id = registry["selected_set"].toInt();
+            if (selected_id > 0) _last_selected_set_id = static_cast<unsigned int>(selected_id);
+            for (auto const& value : registry["sets"].toArray())
+            {
+                int const id = value.toInt();
+                if (id > 0 && std::find(_project_set_ids.begin(), _project_set_ids.end(), id) == _project_set_ids.end())
+                    _project_set_ids.push_back(static_cast<unsigned int>(id));
+            }
+        }
+
+        void GroundEffectsTool::saveProjectSetRegistry()
+        {
+            QJsonArray sets;
+            for (unsigned int id : _project_set_ids) sets.append(static_cast<int>(id));
+            QJsonObject registry;
+            registry["sets"] = sets;
+            registry["selected_set"] = static_cast<int>(_last_selected_set_id);
+            QSaveFile file(QString::fromStdString(Noggit::Project::CurrentProject::get()->ProjectPath + "/ground_effect_sets.json"));
+            QByteArray const data = QJsonDocument(registry).toJson();
+            if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit())
+                LogError << "Couldn't write the ground effect set registry to the project folder." << std::endl;
+        }
+
+        void GroundEffectsTool::mergeProjectSetsIntoLoaded()
+        {
+            std::unordered_set<unsigned int> known_ids;
+            known_ids.reserve(_loaded_effects.size());
+            for (auto const& effect : _loaded_effects)
+            {
+                known_ids.insert(effect.ID);
+            }
+
+            for (unsigned int id : _project_set_ids)
+            {
+                if (known_ids.contains(id))
+                {
+                    continue;
+                }
+
+                ground_effect_set set;
+                set.load_from_id(id);
+                if (set.empty()) // record no longer in the dbc
+                {
+                    continue;
+                }
+                set.Name += " [saved]";
+                _loaded_effects.push_back(set);
+                known_ids.insert(id);
+            }
+        }
+
+        std::optional<unsigned int> GroundEffectsTool::sampleEffectAt(glm::vec3 const& pos)
+        {
+            MapChunk* chunk = _map_view->getWorld()->getChunkAt(pos);
+            if (!chunk || !chunk->getTextureSet() || !chunk->getTextureSet()->num())
+            {
+                return std::nullopt;
+            }
+
+            TextureSet* texture_set = chunk->getTextureSet();
+            if (chunk->doodadMappingNeedsUpdate())
+            {
+                texture_set->updateDoodadMapping();
+                chunk->clearDoodadMappingNeedsUpdate();
+            }
+
+            unsigned int const column = static_cast<unsigned int>(std::clamp(
+                static_cast<int>(std::floor((pos.x - chunk->xbase) / UNITSIZE)), 0, 7));
+            unsigned int const row = static_cast<unsigned int>(std::clamp(
+                static_cast<int>(std::floor((pos.z - chunk->zbase) / UNITSIZE)), 0, 7));
+            unsigned int const layer = texture_set->getDoodadActiveLayerIdAt(column, row);
+            if (layer >= texture_set->num())
+            {
+                return std::nullopt;
+            }
+
+            unsigned int const effect_id = texture_set->getEffectForLayer(layer);
+            if (!effect_id || effect_id == 0xFFFFFFFF || !gGroundEffectTextureDB.CheckIfIdExists(effect_id))
+            {
+                return std::nullopt;
+            }
+
+            auto found = std::find_if(_loaded_effects.begin(), _loaded_effects.end(),
+                [effect_id](ground_effect_set const& effect) { return effect.ID == effect_id; });
+            if (found == _loaded_effects.end())
+            {
+                ground_effect_set effect;
+                effect.load_from_id(effect_id);
+                if (effect.empty())
+                {
+                    return std::nullopt;
+                }
+                _loaded_effects.push_back(effect);
+                updateSetsList();
+            }
+
+            for (int i = 0; i < static_cast<int>(_loaded_effects.size()); ++i)
+            {
+                if (_loaded_effects[i].ID == effect_id)
+                {
+                    _effect_sets_list->setCurrentRow(i);
+                    setActiveGroundEffect(_loaded_effects[i]);
+                    _last_selected_set_id = effect_id;
+                    saveProjectSetRegistry();
+                    updateLivePreview();
+                    emit activeEffectChanged(effect_id, QString::fromStdString(_loaded_effects[i].Name));
+                    return effect_id;
+                }
+            }
+            return std::nullopt;
+        }
+
+        void GroundEffectsTool::createNewSet()
+        {
+            ground_effect_set new_set;
+            new_set.Name = "New Set (unsaved)";
+            new_set.Amount = 8;
+            _loaded_effects.push_back(new_set);
+            updateSetsList();
+            _effect_sets_list->setCurrentRow(_effect_sets_list->count() - 1);
+        }
+
+        void GroundEffectsTool::duplicateSelectedSet()
+        {
+            int const index = _effect_sets_list->currentIndex().row();
+            if (_loaded_effects.empty() || index < 0 || index >= static_cast<int>(_loaded_effects.size()))
+            {
+                QMessageBox::information(this, "Duplicate Ground Effect Set", "Select a set to duplicate first.");
+                return;
+            }
+
+            ground_effect_set copy = _loaded_effects[index];
+            copy.Name = (copy.ID ? std::to_string(copy.ID) : copy.Name) + " copy (unsaved)";
+            copy.ID = 0;
+            _loaded_effects.push_back(copy);
+            updateSetsList();
+            _effect_sets_list->setCurrentRow(_effect_sets_list->count() - 1);
+        }
+
+        void GroundEffectsTool::deleteSelectedSet()
+        {
+            int const index = _effect_sets_list->currentIndex().row();
+            if (_loaded_effects.empty() || index < 0 || index >= static_cast<int>(_loaded_effects.size()))
+            {
+                QMessageBox::information(this, "Delete Ground Effect Set", "Select a set to delete first.");
+                return;
+            }
+
+            ground_effect_set const set = _loaded_effects[index];
+
+            if (set.ID)
+            {
+                if (QMessageBox::question(this
+                    , "Delete Ground Effect Set"
+                    , QString("Delete GroundEffectTexture record %1 from the dbc?\nEvery map using this id loses its effect (chunks referencing it spawn nothing).\nThis cannot be undone.").arg(set.ID)
+                    , QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+                {
+                    return;
+                }
+
+                gGroundEffectTextureDB.removeRecord(set.ID);
+                gGroundEffectTextureDB.save();
+
+                // cached per-chunk placements rebuild without the record
+                DetailDoodads::bumpDbcStamp();
+
+                // the overlay must stop resolving the deleted id
+                _ground_effect_cache.erase(set.ID);
+
+                _project_set_ids.erase(std::remove(_project_set_ids.begin(), _project_set_ids.end(), set.ID), _project_set_ids.end());
+                if (_last_selected_set_id == set.ID) _last_selected_set_id = 0;
+                saveProjectSetRegistry();
+
+                // the shared GroundEffectDoodad records stay: other sets may use them
+            }
+
+            _loaded_effects.erase(_loaded_effects.begin() + index);
+            if (set.ID)
+                _loaded_effects.erase(std::remove_if(_loaded_effects.begin(), _loaded_effects.end(),
+                    [set](ground_effect_set const& effect) { return effect.ID == set.ID; }), _loaded_effects.end());
+            updateSetsList();
+            updateBlizzardAssignmentsCombo();
+            updateLivePreview();
+        }
+
+        void GroundEffectsTool::updateWeightShares()
+        {
+            // spinbox valueChanged fires during construction, before the labels exist
+            if (!_weight_share_labels[3])
+            {
+                return;
+            }
+
+            // replicates the client's stride-13, 16-slot spawn table build (see
+            // DetailDoodads.cpp): later writes win, the padding cycles all id
+            // slots including empty ones
+            int spawn_table[16];
+            std::fill(spawn_table, spawn_table + 16, -1);
+
+            int write_pos = 0;
+            int total = 0;
+            for (int k = 0; k < 4; ++k)
+            {
+                int weight = static_cast<int>(_weight_spinboxes[k]->value());
+                if (weight <= 0)
+                {
+                    continue;
+                }
+                total += weight;
+                while (weight--)
+                {
+                    spawn_table[write_pos & 15] = k;
+                    write_pos += 13;
+                }
+            }
+            while (total < 16)
+            {
+                spawn_table[write_pos & 15] = total & 3;
+                ++total;
+                write_pos += 13;
+            }
+
+            int counts[4] = { 0, 0, 0, 0 };
+            for (int s = 0; s < 16; ++s)
+            {
+                if (spawn_table[s] >= 0)
+                {
+                    counts[spawn_table[s]]++;
+                }
+            }
+
+            for (int k = 0; k < 4; ++k)
+            {
+                QListWidgetItem* item = _object_list->item(k);
+                bool const has_doodad = item && !item->text().isEmpty() && item->text() != STRING_EMPTY_DISPLAY;
+                int const percent = counts[k] * 100 / 16;
+
+                if (!counts[k])
+                {
+                    _weight_share_labels[k]->setText("0%");
+                }
+                else if (has_doodad)
+                {
+                    _weight_share_labels[k]->setText(QString::number(percent) + "%");
+                }
+                else
+                {
+                    // table entries pointing at an empty slot spawn nothing
+                    _weight_share_labels[k]->setText(QString::number(percent) + "% empty");
+                }
+            }
+        }
+
+        void GroundEffectsTool::updateLivePreview()
+        {
+            if (!_map_view || !_map_view->_world || !_live_preview_cb
+                || !_live_preview_cb->isChecked() || !isVisible() || !getSelectedGroundEffect())
+            {
+                if (_map_view && _map_view->_world)
+                {
+                    _map_view->getWorld()->renderer()->clearDetailDoodadPreview();
+                }
+                return;
+            }
+
+            std::string const texture = _texturing_tool->_current_texture
+                ? _texturing_tool->_current_texture->filename() : std::string();
+            if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
+            {
+                _map_view->getWorld()->renderer()->clearDetailDoodadPreview();
+                return;
+            }
+
+            DetailDoodadPreview preview;
+            preview.enabled = true;
+            preview.texture = texture;
+            preview.amount = static_cast<std::uint32_t>(_spinbox_doodads_amount->value());
+            for (int i = 0; i < 4; ++i)
+            {
+                QString const filename = _object_list->item(i)->text();
+                if (!filename.isEmpty() && filename != STRING_EMPTY_DISPLAY)
+                {
+                    preview.filenames[i] = filename.toStdString();
+                }
+                preview.weights[i] = _weight_spinboxes[i]->value();
+            }
+
+            _map_view->getWorld()->renderer()->setDetailDoodadPreview(std::move(preview));
+        }
+
+        void GroundEffectsTool::saveSelectedSet()
+        {
+            int const index = _effect_sets_list->currentIndex().row();
+            if (_loaded_effects.empty() || index < 0 || index >= static_cast<int>(_loaded_effects.size()))
+            {
+                QMessageBox::information(this, "Save Ground Effect Set", "Select or create a set first.");
+                return;
+            }
+
+            std::string filenames[4];
+            bool any_doodad = false;
+            for (int i = 0; i < 4; ++i)
+            {
+                QString const text = _object_list->item(i)->text();
+                if (text.isEmpty() || text == STRING_EMPTY_DISPLAY)
+                {
+                    continue;
+                }
+                filenames[i] = text.toStdString();
+                any_doodad = true;
+            }
+
+            if (!any_doodad && QMessageBox::question(this, "Save Ground Effect Set",
+                "This set has no doodads. Save it as a terrain-type-only effect?",
+                QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+            {
+                return;
+            }
+
+            int total_weight = 0;
+            for (auto* spinbox : _weight_spinboxes)
+            {
+                total_weight += spinbox->value();
+            }
+            if (total_weight > 16 && QMessageBox::question(this, "Save Ground Effect Set",
+                QString("The weights total %1, but the client has only 16 selection slots. Later writes overwrite earlier ones, so the displayed effective shares—not the raw weights—are what will spawn. Save anyway?").arg(total_weight),
+                QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+            {
+                return;
+            }
+
+            ground_effect_set& set = _loaded_effects[index];
+
+            QDialog save_dialog(this);
+            save_dialog.setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
+            save_dialog.setWindowTitle("Save Ground Effect Set");
+            auto dialog_layout = new QVBoxLayout(&save_dialog);
+            dialog_layout->addWidget(new QLabel("GroundEffectTexture Id : ", &save_dialog));
+            auto id_spinbox = new QSpinBox(&save_dialog);
+            id_spinbox->setRange(1, std::numeric_limits<int>::max());
+            id_spinbox->setValue(set.ID ? static_cast<int>(set.ID) : gGroundEffectTextureDB.getEmptyRecordID());
+            dialog_layout->addWidget(id_spinbox);
+            dialog_layout->addWidget(new QLabel("Saving to an id that already exists overwrites that record\nfor every map using it.", &save_dialog));
+            auto save_button = new QPushButton("Save", &save_dialog);
+            dialog_layout->addWidget(save_button);
+            connect(save_button, &QPushButton::clicked, &save_dialog, &QDialog::accept);
+
+            if (save_dialog.exec() != QDialog::Accepted)
+            {
+                return;
+            }
+
+            unsigned int const record_id = static_cast<unsigned int>(id_spinbox->value());
+
+            unsigned int doodad_ids[4] = { 0, 0, 0, 0 };
+            for (int i = 0; i < 4; ++i)
+            {
+                if (!filenames[i].empty())
+                {
+                    doodad_ids[i] = findOrCreateGroundEffectDoodad(filenames[i]);
+                }
+            }
+
+            DBCFile::Record record = gGroundEffectTextureDB.CheckIfIdExists(record_id)
+                ? gGroundEffectTextureDB.getByID(record_id)
+                : gGroundEffectTextureDB.addRecord(record_id);
 
             for (int i = 0; i < 4; ++i)
             {
+                record.write(GroundEffectTextureDB::Doodads + i, doodad_ids[i]);
+                record.write(GroundEffectTextureDB::Weights + i, static_cast<unsigned int>(_weight_spinboxes[i]->value()));
+            }
+            record.write(GroundEffectTextureDB::Amount, static_cast<unsigned int>(_spinbox_doodads_amount->value()));
+            record.write(GroundEffectTextureDB::TerrainType, _cbbox_terrain_type->currentData().toUInt());
+
+            gGroundEffectDoodadDB.save();
+            gGroundEffectTextureDB.save();
+
+            // cached per-chunk placements rebuild against the new records
+            DetailDoodads::bumpDbcStamp();
+
+            _last_selected_set_id = record_id;
+            if (std::find(_project_set_ids.begin(), _project_set_ids.end(), record_id) == _project_set_ids.end())
+            {
+                _project_set_ids.push_back(record_id);
+            }
+            saveProjectSetRegistry();
+
+            set.ID = record_id;
+            set.Amount = _spinbox_doodads_amount->value();
+            set.TerrainType = _cbbox_terrain_type->currentData().toUInt();
+            for (int i = 0; i < 4; ++i)
+            {
+                set.Doodads[i].ID = doodad_ids[i];
+                set.Doodads[i].filename = filenames[i];
+                set.Weights[i] = _weight_spinboxes[i]->value();
+            }
+            set.rebuild_name();
+
+            ground_effect_set const saved_set = set;
+            _ground_effect_cache[record_id] = saved_set;
+            _loaded_effects.erase(std::remove_if(_loaded_effects.begin(), _loaded_effects.end(),
+                [record_id](ground_effect_set const& effect) { return effect.ID == record_id; }), _loaded_effects.end());
+            _loaded_effects.push_back(saved_set);
+            updateSetsList();
+            updateBlizzardAssignmentsCombo();
+        }
+
+        void GroundEffectsTool::applyEffectIdAtScope(std::string const& texture, unsigned int effect_id,
+                                                     bool override_existing, QString const& global_confirm,
+                                                     std::optional<unsigned int> only_effect_id)
+        {
+            World* world = _map_view->getWorld();
+            if (!world) return;
+            int const scope = _generate_type_group->checkedId();
+            if (scope == 3 || _scope_disk_sweep_cb->isChecked())
+            {
+                // TODO(azure-port): global/zone/area disk sweep needs World::applyGroundEffectGlobal.
+                Q_UNUSED(global_confirm);
+                QMessageBox::information(this, "Ground Effect Scope",
+                    "Assignment to unloaded tiles is not available yet. Choose a loaded zone, area, ADT or chunk.");
+                return;
+            }
+            if (scope < 0 || scope > 4) return;
+
+            glm::vec3 const camera_pos = _map_view->getCamera()->position;
+            MapChunk* camera_chunk = world->getChunkAt(camera_pos);
+            MapTile* camera_tile = world->mapIndex.getTile(TileIndex(camera_pos));
+            if (!camera_chunk || !camera_tile || !camera_tile->finishedLoading())
+            {
+                QMessageBox::information(this, "Ground Effect Scope", "The camera is not over a loaded tile.");
+                return;
+            }
+            unsigned int const target_area = scope == 0
+                ? groundEffectZoneId(camera_chunk->getAreaID()) : camera_chunk->getAreaID();
+            std::string const matching_texture = normalizedTextureName(texture);
+
+            // Cinder has layer-info undo and setEffect(), but not Azure's World scope helpers.
+            // Work on loaded tiles locally, marking only tiles with changed assignments.
+            bool const owns_action = NOGGIT_CUR_ACTION == nullptr;
+            if (owns_action)
+                NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eCHUNKS_LAYERINFO);
+
+            for (MapTile* tile : world->mapIndex.loaded_tiles())
+            {
+                if (!tile || !tile->finishedLoading() || ((scope == 2 || scope == 4) && tile != camera_tile))
+                    continue;
+                bool changed = false;
+                for (int x = 0; x < 16; ++x)
+                {
+                    for (int y = 0; y < 16; ++y)
+                    {
+                        MapChunk* chunk = tile->getChunk(x, y);
+                        if (!chunk || (scope == 4 && chunk != camera_chunk)) continue;
+                        if (scope == 0 && groundEffectZoneId(chunk->getAreaID()) != target_area) continue;
+                        if (scope == 1 && chunk->getAreaID() != target_area) continue;
+                        TextureSet* textures = chunk->getTextureSet();
+                        if (!textures) continue;
+                        bool registered = false;
+                        for (std::size_t layer = 0; layer < textures->num(); ++layer)
+                        {
+                            if (!matching_texture.empty() && normalizedTextureName(textures->filename(layer)) != matching_texture)
+                                continue;
+                            unsigned int const old_id = textures->getEffectForLayer(layer);
+                            if (only_effect_id && old_id != *only_effect_id) continue;
+                            if (!override_existing && old_id && old_id != 0xFFFFFFFF) continue;
+                            if (old_id == effect_id || (!effect_id && old_id == 0xFFFFFFFF)) continue;
+                            if (!registered)
+                            {
+                                NOGGIT_CUR_ACTION->registerChunkLayerInfoChange(chunk);
+                                registered = true;
+                            }
+                            textures->setEffect(layer, static_cast<int>(effect_id));
+                            changed = true;
+                        }
+                    }
+                }
+                if (changed) world->mapIndex.setChanged(tile);
+            }
+            if (owns_action) NOGGIT_ACTION_MGR->endAction();
+            genEffectColors();
+        }
+
+        void GroundEffectsTool::applySelectedSet()
+        {
+            auto effect = getSelectedGroundEffect();
+            if (!effect.has_value() || !effect->ID)
+            {
+                QMessageBox::information(this, "Apply Ground Effect", "Select a saved set first (unsaved sets have no id to apply).");
+                return;
+            }
+
+            std::string const texture = _texturing_tool->_current_texture
+                ? _texturing_tool->_current_texture->filename() : std::string();
+            if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
+            {
+                QMessageBox::information(this, "Apply Ground Effect", "Select a texture first.");
+                return;
+            }
+
+            applyEffectIdAtScope(texture, effect->ID, _apply_override_cb->isChecked()
+                , QString("Apply this effect to the texture on every ADT of the map?\n") + STRING_DISK_SWEEP_WARNING);
+        }
+
+        void GroundEffectsTool::clearEffectsAtScope()
+        {
+            std::string texture;
+            std::optional<unsigned int> only_effect_id;
+            QString confirmation;
+
+            switch (_clear_target_combo->currentData().toInt())
+            {
+            case 0: // selected effect id, regardless of texture
+            {
+                auto const effect = getSelectedGroundEffect();
+                if (!effect.has_value() || !effect->ID)
+                {
+                    QMessageBox::information(this, "Clear Ground Effects", "Select a saved effect set first.");
+                    return;
+                }
+                only_effect_id = effect->ID;
+                confirmation = QString("Remove only ground effect ID %1 from every ADT of the map?\n").arg(effect->ID)
+                             + STRING_DISK_SWEEP_WARNING;
+                break;
+            }
+            case 1: // selected terrain texture, regardless of effect id
+                texture = _texturing_tool->_current_texture
+                    ? _texturing_tool->_current_texture->filename() : std::string();
+                if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
+                {
+                    QMessageBox::information(this, "Clear Ground Effects", "Select a terrain texture first.");
+                    return;
+                }
+                confirmation = QString("Remove every ground effect assigned to texture\n%1\nfrom every ADT of the map?\n")
+                             .arg(QString::fromStdString(texture)) + STRING_DISK_SWEEP_WARNING;
+                break;
+            case 2: // every effect on every texture
+                confirmation = QString("Remove ALL ground effects from every ADT of the map?\n") + STRING_DISK_SWEEP_WARNING;
+                break;
+            default:
+                return;
+            }
+
+            applyEffectIdAtScope(texture, 0, true, confirmation, only_effect_id);
+        }
+
+        void GroundEffectsTool::setActiveGroundEffect(ground_effect_set const& effect)
+        {
+            // Sets a ground effect to be actively selected in the UI.
+            QSignalBlocker const amount_blocker(_spinbox_doodads_amount);
+            _spinbox_doodads_amount->setValue(effect.Amount);
+            int const terrain_type_index = _cbbox_terrain_type->findData(QVariant(effect.TerrainType));
+            _cbbox_terrain_type->setCurrentIndex(terrain_type_index >= 0 ? terrain_type_index : 0);
+
+            for (int i = 0; i < 4; ++i)
+            {
+                QSignalBlocker const weight_blocker(_weight_spinboxes[i]);
+                _weight_spinboxes[i]->setValue(effect.Weights[i]);
                 QString filename(effect.Doodads[i].filename.c_str());
                 // Replace old extensions in the DBC.
                 filename = filename.replace(".mdx", ".m2", Qt::CaseInsensitive);
@@ -827,6 +1769,9 @@ namespace Noggit
                 }
                 updateDoodadPreviewRender(i);
             }
+
+            updateWeightShares();
+            updateLivePreview();
         }
 
         void ground_effect_set::load_from_id(unsigned int effect_id)
@@ -875,12 +1820,55 @@ namespace Noggit
 
                     Doodads[i].filename = filename.toStdString();
                 }
+                rebuild_name();
             }
             catch (GroundEffectTextureDB::NotFound)
             {
                 ID = 0;
                 assert(false);
                 LogError << "Couldn't find ground effect Id : " << effect_id << "in GroundEffectTexture.dbc" << std::endl;
+            }
+        }
+
+        void ground_effect_set::rebuild_name()
+        {
+            std::string doodad_names;
+            int doodad_count = 0;
+            for (int i = 0; i < 4; ++i)
+            {
+                if (Doodads[i].filename.empty())
+                {
+                    continue;
+                }
+                doodad_count++;
+                if (doodad_count <= 2)
+                {
+                    std::string stem = Doodads[i].filename;
+                    size_t const dot = stem.find_last_of('.');
+                    if (dot != std::string::npos)
+                    {
+                        stem.resize(dot);
+                    }
+                    if (!doodad_names.empty())
+                    {
+                        doodad_names += ", ";
+                    }
+                    doodad_names += stem;
+                }
+            }
+
+            Name = std::to_string(ID);
+            if (doodad_count)
+            {
+                Name += " - " + doodad_names;
+                if (doodad_count > 2)
+                {
+                    Name += " +" + std::to_string(doodad_count - 2);
+                }
+            }
+            else
+            {
+                Name += " - no doodads";
             }
         }
 
