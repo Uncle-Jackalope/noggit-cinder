@@ -1348,13 +1348,21 @@ void TextureSet::uploadAlphamapData()
 {
   // This method assumes tile's alphamap storage is currently bound to the current texture unit
 
-  if (!(_chunk->getUpdateFlags() & ChunkUpdateFlags::ALPHAMAP) || !nTextures)
+  std::size_t const render_count = renderTextureCount();
+  if (!(_chunk->getUpdateFlags() & ChunkUpdateFlags::ALPHAMAP) || !render_count)
     return;
 
   static std::array<float, 3 * 64 * 64> amap{};
   std::fill(amap.begin(), amap.end(), 0.0f);
 
-  if (tmp_edit_values)
+  if (_chunk_mover_texture_preview)
+  {
+    // Chunk Mover ghost: upload the pre-composed preview alphamaps directly.
+    for (int i = 0; i < 64 * 64; ++i)
+      for (int alpha_id = 0; alpha_id < 3; ++alpha_id)
+        amap[i * 3 + alpha_id] = _chunk_mover_texture_preview->alphamaps[alpha_id][i];
+  }
+  else if (tmp_edit_values)
   {
     auto& tmp_amaps = *tmp_edit_values;
 
@@ -1397,6 +1405,30 @@ void TextureSet::uploadAlphamapData()
   gl.texSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, _chunk->px * 16 + _chunk->py,
                    64, 64, 1, GL_RGB, GL_FLOAT, amap.data());
 
+}
+
+void TextureSet::setChunkMoverTexturePreview(std::optional<chunk_mover_texture_preview> preview)
+{
+  _chunk_mover_texture_preview = std::move(preview);
+  // Upload-only: re-queue the render work without marking the ADT as edited.
+  _chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+  _chunk->requeueChunkUpdate(ChunkUpdateFlags::FLAGS);
+}
+
+std::size_t TextureSet::renderTextureCount() const
+{
+  return _chunk_mover_texture_preview ? _chunk_mover_texture_preview->textures.size() : nTextures;
+}
+
+std::vector<scoped_blp_texture_reference>& TextureSet::renderTextures()
+{
+  return _chunk_mover_texture_preview ? _chunk_mover_texture_preview->textures : textures;
+}
+
+unsigned int TextureSet::renderTextureFlag(std::size_t id) const
+{
+  return _chunk_mover_texture_preview ? _chunk_mover_texture_preview->flags.at(id)
+                                      : _layers_info[id].flags;
 }
 
 namespace

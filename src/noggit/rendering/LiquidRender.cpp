@@ -101,15 +101,20 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
         {
           ChunkWater* chunk = _map_tile->Water.chunks[z][x].get();
 
-          if (layer_counter >= chunk->getLayers()->size())
+          // getRenderLayers returns the Chunk Mover ghost-preview layers when a
+          // preview is installed, otherwise the real _layers. The MCLQ save path
+          // is unaffected (it only ever reads getLayers()/_layers).
+          std::vector<liquid_layer>* render_layers = chunk->getRenderLayers();
+
+          if (layer_counter >= render_layers->size())
             continue;
 
           if (!_map_tile->Water._has_data)
           {
-            _map_tile->Water._has_data = chunk->hasData(layer_counter);
+            _map_tile->Water._has_data = true;
           }
 
-          liquid_layer& layer = (*chunk->getLayers())[layer_counter];
+          liquid_layer& layer = (*render_layers)[layer_counter];
 
           // create layer
           if (layer_counter >= _render_layers.size())

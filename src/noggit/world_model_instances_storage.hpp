@@ -6,6 +6,7 @@
 #include <noggit/WMOInstance.h>
 #include <opengl/scoped.hpp>
 #include <atomic>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -42,6 +43,13 @@ namespace Noggit
     void delete_instances(std::vector<selected_object_type> const& instances, bool action);
     void delete_instance(std::uint32_t uid, bool action);
     void unload_instance_and_remove_from_selection_if_necessary(std::uint32_t uid);
+
+    // Chunk Mover ghost-preview instances. Preview UIDs are allocated from the
+    // top of the uid range downward so they never collide with real placements,
+    // and are torn down without touching the action stack or selection groups.
+    // (Ported from Noggit Azure.)
+    std::uint32_t new_preview_uid();
+    void delete_preview_instance(std::uint32_t uid);
 
     void clear();
 
@@ -117,5 +125,8 @@ namespace Noggit
     bool _transform_storage_uploaded = false;
 
     std::unordered_map<std::uint32_t, int> _instance_count_per_uid;
+
+  // Next uid handed out for a Chunk Mover ghost-preview instance (counts down).
+  std::uint32_t _next_preview_uid = std::numeric_limits<std::uint32_t>::max();
   };
 }

@@ -460,7 +460,13 @@ void main()
 
   if(draw_selection_overlay != 0 && instances[instanceID].AreaIDColor_Pad2_DrawSelection.a != 0)
   {
-   out_color.rgb = mix(vec3(1.0), out_color.rgb, 0.5);
+    // Chunk Mover reuses this channel: 2 = source (green), 3 = destination
+    // preview (cyan); any other non-zero value is a normal selection (white).
+    float selection_kind = instances[instanceID].AreaIDColor_Pad2_DrawSelection.a;
+    vec3 selection_color = selection_kind == 2.0 ? vec3(0.15, 1.0, 0.2)
+                         : selection_kind == 3.0 ? vec3(0.15, 0.7, 1.0)
+                         : vec3(1.0);
+    out_color.rgb = mix(selection_color, out_color.rgb, 0.45);
   }
 
   if (draw_shadows != 0)

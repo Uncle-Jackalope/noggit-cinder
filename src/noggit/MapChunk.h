@@ -116,6 +116,12 @@ public:
 
 private:
 
+  // Chunk Mover ghost preview buffers (transient, never serialized).
+  std::optional<std::array<float, mapbufsize>> _chunk_mover_preview_heights;
+  // Packed exactly like the tile heightmap texture: (-normal.z, normal.y, -normal.x).
+  std::optional<std::array<glm::vec3, mapbufsize>> _chunk_mover_preview_normals;
+  std::optional<std::array<glm::vec3, mapbufsize>> _chunk_mover_preview_original_normals;
+
   unsigned _chunk_update_flags;
 
   Noggit::NoggitRenderContext _context;
@@ -124,11 +130,15 @@ public:
 
     TextureSet* getTextureSet() const;
 
-  // Stamp/chunk-mover ghost preview: accepted no-ops in Cinder (the Azure translucent-overlay
-  // renderer that reads these preview buffers isn't ported yet). Kept so the ported stamp tool
-  // compiles and runs 1:1 -- the stamp still applies for real; only the live preview is absent.
-  void setChunkMoverPreviewHeights(std::optional<std::array<float, mapbufsize>>) {}
-  void setChunkMoverPreviewNormals(std::optional<std::array<glm::vec3, mapbufsize>>) {}
+  // Transient viewport-only marker used by the Chunk Mover. It is never
+  // serialized to the ADT. 0 = none, 2 = source, 3 = destination preview.
+  // (Ported from Noggit Azure.)
+  int chunk_mover_overlay = 0;
+  void setChunkMoverOverlay(int value, bool force_upload = false);
+  // Chunk Mover ghost preview: when set, updateVerticesData uploads these copied
+  // heights/normals to the heightmap texture without mutating the real ADT data.
+  void setChunkMoverPreviewHeights(std::optional<std::array<float, mapbufsize>> heights);
+  void setChunkMoverPreviewNormals(std::optional<std::array<glm::vec3, mapbufsize>> normals);
 
   void draw ( math::frustum const& frustum
             , OpenGL::Scoped::use_program& mcnk_shader
@@ -241,6 +251,10 @@ public:
   void initMCCV();
 
   void registerChunkUpdate(unsigned flags);
+  // Upload-only bookkeeping: re-queues renderer work without the edit side
+  // effects of registerChunkUpdate (no detail-doodad invalidation). Used by the
+  // Chunk Mover so selecting/previewing a chunk never marks its ADT as edited.
+  void requeueChunkUpdate(unsigned flags);
   void endChunkUpdates();
   unsigned getUpdateFlags() const;
 

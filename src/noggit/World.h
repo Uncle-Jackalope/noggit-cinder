@@ -291,6 +291,11 @@ public:
       , bool ignore_params
       , bool action
   );
+  // Chunk Mover ghost-preview instances: render-only M2/WMO copies that track
+  // the cursor. Never saved, never counted as real placements. (Azure port.)
+  ModelInstance* addChunkMoverPreviewM2(BlizzardArchive::Listfile::FileKey const& file_key,
+                                       glm::vec3 newPos, float scale,
+                                       math::degrees::vec3 rotation);
 
   WMOInstance* addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey const& file_key
       , glm::vec3 newPos
@@ -298,6 +303,12 @@ public:
       , float scale
       , bool action
   );
+  WMOInstance* addChunkMoverPreviewWMO(BlizzardArchive::Listfile::FileKey const& file_key,
+                                       glm::vec3 newPos, math::degrees::vec3 rotation,
+                                       float scale);
+  bool updateChunkMoverPreviewInstance(std::uint32_t uid, glm::vec3 new_pos,
+                                       math::degrees::vec3 rotation, float scale);
+  void deleteChunkMoverPreviewInstance(std::uint32_t uid);
 
   auto stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter
   , float radiusInner, int BrushType, bool sculpt) -> void;
@@ -321,6 +332,9 @@ public:
   void deleteModelInstance(int uid, bool action);
   void deleteWMOInstance(int uid, bool action);
   void deleteInstance(int uid, bool action);
+  // Remove several real instances by uid in one pass (skips preview ghosts).
+  // Used by the Chunk Mover's "replace destination objects" paste. (Azure port.)
+  void deleteInstances(std::vector<std::uint32_t> const& uids, bool action);
 
   bool uid_duplicates_found() const;
   void delete_duplicate_model_and_wmo_instances();

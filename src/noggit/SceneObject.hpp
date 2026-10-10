@@ -91,6 +91,11 @@ public:
 
   bool _grouped = false;
 
+  // Transient viewport-only marker used by the Chunk Mover preview. A preview
+  // instance is a render-only ghost: it is never saved, never counted as a real
+  // placement, and is skipped by iteration/save paths. (Ported from Noggit Azure.)
+  bool chunk_mover_preview = false;
+
 protected:
   SceneObjectTypes _type;
 

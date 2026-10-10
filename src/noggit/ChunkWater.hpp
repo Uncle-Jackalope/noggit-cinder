@@ -5,6 +5,7 @@
 #include <noggit/MapHeaders.h>
 #include <noggit/tool_enums.hpp>
 
+#include <optional>
 #include <vector>
 
 class MapChunk;
@@ -57,6 +58,12 @@ public:
   void tagUpdate();
 
   std::vector<liquid_layer>* getLayers();
+  // Viewport-only liquid layers used by Chunk Mover previews. They are kept
+  // separate from _layers so previewing can never dirty or serialize an ADT.
+  // getRenderLayers returns the preview layers when present, otherwise _layers.
+  // (Ported from Noggit Azure; the MCLQ save path still reads _layers only.)
+  std::vector<liquid_layer>* getRenderLayers();
+  void setChunkMoverLiquidPreview(std::optional<std::vector<liquid_layer>> layers);
 
   // update every layer's render
   void update_layers();
@@ -103,6 +110,7 @@ private:
   void update_attributes();
 
   std::vector<liquid_layer> _layers;
+  std::optional<std::vector<liquid_layer>> _chunk_mover_preview_layers;
   int _layer_count = 0;
 
   MapChunk* _chunk;

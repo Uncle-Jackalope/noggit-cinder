@@ -234,9 +234,11 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
       {
         _chunk_instance_data[i].ChunkHoles_DrawImpass_TexLayerCount_CantPaint[1] = chunk->header_flags.flags.impass;
 
-        for (int k = 0; k < chunk->texture_set->num(); ++k)
+        // renderTextureCount/renderTextureFlag fall through to the real chunk
+        // data unless a Chunk Mover ghost preview is installed.
+        for (int k = 0; k < chunk->texture_set->renderTextureCount(); ++k)
         {
-          unsigned layer_flags = chunk->texture_set->flag(k);
+          unsigned layer_flags = chunk->texture_set->renderTextureFlag(k);
           auto flag_view = reinterpret_cast<MCLYFlags*>(&layer_flags);
 
           _chunk_instance_data[i].ChunkTexDoAnim[k] = flag_view->animation_enabled;
@@ -267,7 +269,10 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
       }
       
 
-      _chunk_instance_data[i].AreaIDColor_Pad2_DrawSelection[3] = _selected;
+      // Chunk Mover reuses the selection-overlay channel: 0 none, 2 source,
+      // 3 destination preview. A real editor selection still wins with 1.
+      _chunk_instance_data[i].AreaIDColor_Pad2_DrawSelection[3]
+        = _selected ? 1.f : static_cast<float>(chunk->chunk_mover_overlay);
 
       chunk->endChunkUpdates();
 
@@ -532,7 +537,9 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
 {
   MapTileDrawCall& draw_call = _draw_calls[draw_call_index];
 
-  _chunk_instance_data[chunk_index].ChunkHoles_DrawImpass_TexLayerCount_CantPaint[2] = static_cast<int>(chunk->texture_set->num());
+  // renderTextureCount/renderTextures fall through to the real chunk textures
+  // unless a Chunk Mover ghost preview is installed on this chunk.
+  _chunk_instance_data[chunk_index].ChunkHoles_DrawImpass_TexLayerCount_CantPaint[2] = static_cast<int>(chunk->texture_set->renderTextureCount());
 
   static constexpr unsigned NUM_SAMPLERS = 11;
 
@@ -549,10 +556,10 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
   }
 
 
-  auto& chunk_textures = (*chunk->texture_set->getTextures());
+  auto& chunk_textures = chunk->texture_set->renderTextures();
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
-  for (int k = 0; k < chunk->texture_set->num(); ++k)
+  for (int k = 0; k < chunk->texture_set->renderTextureCount(); ++k)
   {
     chunk_textures[k]->upload();
 
@@ -582,8 +589,8 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
         _chunk_instance_data[chunk_index].ChunkTextureHeightOffset[k] = hData.heightOffset;
     }
 
-    GLuint tex_array = (*chunk->texture_set->getTextures())[k]->texture_array();
-    int tex_index = (*chunk->texture_set->getTextures())[k]->array_index();
+    GLuint tex_array = chunk_textures[k]->texture_array();
+    int tex_index = chunk_textures[k]->array_index();
 
     int sampler_id = -1;
     for (int n = 0; n < draw_call.samplers.size(); ++n)
@@ -673,7 +680,7 @@ void TileRender::initChunkData(MapChunk* chunk)
   chunk_render_instance.ChunkHoles_DrawImpass_TexLayerCount_CantPaint[2] = static_cast<int>(chunk->texture_set->num());
   chunk_render_instance.ChunkHoles_DrawImpass_TexLayerCount_CantPaint[3] = 0;
   chunk_render_instance.AreaIDColor_Pad2_DrawSelection[0] = chunk->areaID;
-  chunk_render_instance.AreaIDColor_Pad2_DrawSelection[3] = 0;
+  chunk_render_instance.AreaIDColor_Pad2_DrawSelection[3] = static_cast<float>(chunk->chunk_mover_overlay);
 
   chunk_render_instance.ChunkGroundEffectColor[0] = 0.0f;
   chunk_render_instance.ChunkGroundEffectColor[1] = 0.0f;

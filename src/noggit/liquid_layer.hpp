@@ -109,6 +109,10 @@ public:
 
   void copy_subchunk_height(int x, int z, liquid_layer const& from);
 
+  // Recalculate cached min/max (and fatigue) after bulk edits rewrite vertices,
+  // e.g. a Chunk Mover liquid paste/preview. (Ported from Noggit Azure.)
+  void refresh();
+
   ChunkWater* getChunk();
 
   bool has_fatigue() const;

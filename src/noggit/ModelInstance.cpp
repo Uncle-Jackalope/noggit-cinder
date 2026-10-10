@@ -56,6 +56,7 @@ ModelInstance::ModelInstance(ModelInstance&& other) noexcept
   _transform_mat_inverted = other._transform_mat_inverted;
   _context = other._context;
   uid = other.uid;
+  chunk_mover_preview = other.chunk_mover_preview;
 }
 
 ModelInstance& ModelInstance::operator= (ModelInstance&& other) noexcept
@@ -66,6 +67,7 @@ ModelInstance& ModelInstance::operator= (ModelInstance&& other) noexcept
   std::swap(light_color, other.light_color);
   std::swap(uid, other.uid);
   std::swap(scale, other.scale);
+  std::swap(chunk_mover_preview, other.chunk_mover_preview);
   std::swap(size_cat, other.size_cat);
   std::swap(_need_recalc_extents, other._need_recalc_extents);
   std::swap(extents, other.extents);

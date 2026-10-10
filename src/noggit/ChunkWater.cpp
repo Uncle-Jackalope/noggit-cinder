@@ -563,3 +563,14 @@ std::vector<liquid_layer>* ChunkWater::getLayers()
   return &_layers;
 }
 
+std::vector<liquid_layer>* ChunkWater::getRenderLayers()
+{
+  return _chunk_mover_preview_layers ? &*_chunk_mover_preview_layers : &_layers;
+}
+
+void ChunkWater::setChunkMoverLiquidPreview(std::optional<std::vector<liquid_layer>> layers)
+{
+  _chunk_mover_preview_layers = std::move(layers);
+  tagUpdate();
+}
+

@@ -181,6 +181,9 @@ public:
   bool hasTile(const TileIndex& index) const;
   bool tileAwaitingLoading(const TileIndex& tile) const;
   bool tileLoaded(const TileIndex& tile) const;
+  // true while any loaded tile is still finishing its async load. The Chunk
+  // Mover uses this to defer the detailed ghost preview until tiles are ready.
+  bool hasTilesAwaitingLoading() const;
 
   void save();
   void saveall (World*);

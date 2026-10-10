@@ -610,7 +610,11 @@ void MapTile::save(World* world, bool save_using_mclq_liquids)
     {
       if (model.value().index() == eEntry_Object)
       {
-        auto which = std::get<selected_object_type>(model.value())->which();
+        auto* scene_object = std::get<selected_object_type>(model.value());
+        // Chunk Mover ghost-preview instances are viewport-only: never save them.
+        if (scene_object->chunk_mover_preview)
+          continue;
+        auto which = scene_object->which();
         if (which == eWMO)
         {
           lObjectInstances.emplace_back(static_cast<WMOInstance*>(std::get<selected_object_type>(model.value())));

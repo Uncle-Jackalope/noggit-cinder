@@ -2390,6 +2390,15 @@ void MapView::setupHotkeys()
   addHotkey(Qt::Key_F, MOD_none, "setAreaId"_hash);
 
   addHotkey(Qt::Key_Delete, MOD_none, "deleteSelection"_hash);
+
+  // Chunk Mover (ChunkTool) hotkeys. These share physical keys with other tools;
+  // dispatch is gated per-tool by each handler's condition, so they only fire
+  // while the Chunk Mover is active and has a copy. (Ported from Noggit Azure.)
+  addHotkey(Qt::Key_V, MOD_none, "chunkMoverPaste"_hash);
+  addHotkey(Qt::Key_X, MOD_none, "chunkMoverClear"_hash);
+  addHotkey(Qt::Key_R, MOD_none, "chunkMoverRotate"_hash);
+  addHotkey(Qt::Key_F, MOD_none, "chunkMoverMirrorHorizontal"_hash);
+  addHotkey(Qt::Key_F, MOD_alt, "chunkMoverMirrorVertical"_hash);
 }
 
 void MapView::setupMinimap()

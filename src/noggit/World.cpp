@@ -2037,6 +2037,144 @@ void World::deleteInstance(int uid, bool action)
   }
 }
 
+void World::deleteInstances(std::vector<std::uint32_t> const& uids, bool action)
+{
+  ZoneScoped;
+  bool removed_any = false;
+  for (std::uint32_t uid : uids)
+  {
+    auto instance = _model_instance_storage.get_instance(uid);
+    if (!instance)
+      continue;
+
+    SceneObject* object = std::get<selected_object_type>(*instance);
+    if (object->chunk_mover_preview)
+      continue;
+
+    // delete_instance handles tile updates + action-stack registration.
+    _model_instance_storage.delete_instance(uid, action);
+    removed_any = true;
+  }
+
+  if (removed_any)
+  {
+    need_model_updates = true;
+    reset_selection();
+  }
+}
+
+ModelInstance* World::addChunkMoverPreviewM2(
+    BlizzardArchive::Listfile::FileKey const& file_key, glm::vec3 newPos, float scale,
+    math::degrees::vec3 rotation)
+{
+  ZoneScoped;
+  ModelInstance model_instance(file_key, _context);
+  model_instance.uid = _model_instance_storage.new_preview_uid();
+  model_instance.pos = newPos;
+  model_instance.scale = scale;
+  model_instance.dir = rotation;
+  model_instance.chunk_mover_preview = true;
+  model_instance.model->wait_until_loaded();
+  model_instance.recalcExtents();
+  std::uint32_t const uid = _model_instance_storage.add_model_instance(
+      std::move(model_instance), false, false);
+  ModelInstance* instance = _model_instance_storage.get_model_instance(uid).value();
+  auto const& extents = instance->getExtents();
+  TileIndex const start(extents[0]);
+  TileIndex const end(extents[1]);
+  if (start.is_valid() && end.is_valid())
+    for (std::size_t z = start.z; z <= end.z; ++z)
+      for (std::size_t x = start.x; x <= end.x; ++x)
+        if (MapTile* tile = mapIndex.getTile(TileIndex{x, z}); tile && tile->finishedLoading())
+          tile->add_model(instance);
+  need_model_updates = true;
+  return instance;
+}
+
+WMOInstance* World::addChunkMoverPreviewWMO(
+    BlizzardArchive::Listfile::FileKey const& file_key, glm::vec3 newPos,
+    math::degrees::vec3 rotation, float scale)
+{
+  ZoneScoped;
+  WMOInstance wmo_instance(file_key, _context);
+  wmo_instance.uid = _model_instance_storage.new_preview_uid();
+  wmo_instance.pos = newPos;
+  wmo_instance.dir = rotation;
+  wmo_instance.scale = scale;
+  wmo_instance.chunk_mover_preview = true;
+  wmo_instance.wmo->wait_until_loaded();
+  wmo_instance.recalcExtents();
+  std::uint32_t const uid = _model_instance_storage.add_wmo_instance(
+      std::move(wmo_instance), false, false);
+  WMOInstance* instance = _model_instance_storage.get_wmo_instance(uid).value();
+  auto const& extents = instance->getExtents();
+  TileIndex const start(extents[0]);
+  TileIndex const end(extents[1]);
+  if (start.is_valid() && end.is_valid())
+    for (std::size_t z = start.z; z <= end.z; ++z)
+      for (std::size_t x = start.x; x <= end.x; ++x)
+        if (MapTile* tile = mapIndex.getTile(TileIndex{x, z}); tile && tile->finishedLoading())
+          tile->add_model(instance);
+  need_model_updates = true;
+  return instance;
+}
+
+bool World::updateChunkMoverPreviewInstance(std::uint32_t uid, glm::vec3 new_pos,
+                                            math::degrees::vec3 rotation, float scale)
+{
+  ZoneScoped;
+  auto instance = _model_instance_storage.get_instance(uid);
+  if (!instance)
+    return false;
+
+  SceneObject* object = std::get<selected_object_type>(*instance);
+  if (!object->chunk_mover_preview)
+    return false;
+
+  // Preview objects are viewport-only, so update their tile references directly
+  // instead of deleting/reconstructing the model and waiting on its asset again.
+  std::vector<MapTile*> const old_tiles = object->getTiles();
+  for (MapTile* tile : old_tiles)
+    if (tile)
+      tile->remove_model(object);
+
+  object->pos = new_pos;
+  object->dir = rotation;
+  object->scale = scale;
+  object->recalcExtents();
+
+  auto const& extents = object->getExtents();
+  TileIndex const start(extents[0]);
+  TileIndex const end(extents[1]);
+  if (start.is_valid() && end.is_valid())
+    for (std::size_t z = start.z; z <= end.z; ++z)
+      for (std::size_t x = start.x; x <= end.x; ++x)
+        if (MapTile* tile = mapIndex.getTile(TileIndex{x, z}); tile && tile->finishedLoading())
+          tile->add_model(object);
+
+  need_model_updates = true;
+  return true;
+}
+
+void World::deleteChunkMoverPreviewInstance(std::uint32_t uid)
+{
+  ZoneScoped;
+  auto instance = _model_instance_storage.get_instance(uid);
+  if (!instance)
+    return;
+
+  SceneObject* object = std::get<selected_object_type>(*instance);
+  if (!object->chunk_mover_preview)
+    return;
+
+  std::vector<MapTile*> const referenced_tiles = object->getTiles();
+  for (MapTile* tile : referenced_tiles)
+    if (tile)
+      tile->remove_model(object);
+  _model_instance_storage.delete_preview_instance(uid);
+  need_model_updates = true;
+}
+
 bool World::uid_duplicates_found() const
 {
   ZoneScoped;
@@ -2288,6 +2426,18 @@ void World::remove_models_if_needed(std::vector<uint32_t> const& uids)
 
   for (uint32_t uid : uids)
   {
+    // Chunk Mover ghosts are owned by ChunkClipboard rather than by an ADT.
+    // A ghost can span several tiles but is inserted into storage only once;
+    // letting the first unloading tile decrement its reference count would erase
+    // the shared instance while other loaded tiles still hold its pointer. The
+    // clipboard removes the ghost explicitly. (Ported from Noggit Azure.)
+    if (auto instance = _model_instance_storage.get_instance(uid))
+    {
+      SceneObject* object = std::get<selected_object_type>(*instance);
+      if (object->chunk_mover_preview)
+        continue;
+    }
+
     // it handles the removal from the selection if necessary
     _model_instance_storage.unload_instance_and_remove_from_selection_if_necessary(uid);
   }

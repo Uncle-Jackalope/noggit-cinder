@@ -653,9 +653,20 @@ void MapChunk::updateVerticesData()
 
   for (int i(0); i < mapbufsize; ++i)
   {
-    vmin.y = std::min(vmin.y, mVertices[i].y);
-    vmax.y = std::max(vmax.y, mVertices[i].y);
-    tile_buffer[chunk_start + i * 4 + 3] = mVertices[i].y;
+    // Chunk Mover ghost preview: show the copied height/normal without mutating
+    // the real ADT vertices. Keep the real terrain inside the bounds too, so a
+    // large height offset can't drop the chunk out of culling/cursor tests.
+    float const height = _chunk_mover_preview_heights
+      ? (*_chunk_mover_preview_heights)[i] : mVertices[i].y;
+    if (_chunk_mover_preview_normals)
+    {
+      tile_buffer[chunk_start + i * 4] = (*_chunk_mover_preview_normals)[i].x;
+      tile_buffer[chunk_start + i * 4 + 1] = (*_chunk_mover_preview_normals)[i].y;
+      tile_buffer[chunk_start + i * 4 + 2] = (*_chunk_mover_preview_normals)[i].z;
+    }
+    vmin.y = std::min(vmin.y, std::min(height, mVertices[i].y));
+    vmax.y = std::max(vmax.y, std::max(height, mVertices[i].y));
+    tile_buffer[chunk_start + i * 4 + 3] = height;
   }
 
   mt->markExtentsDirty();
@@ -2189,6 +2200,64 @@ void MapChunk::registerChunkUpdate(unsigned flags)
   {
     _doodad_mapping_needs_update = true;
   }
+}
+
+void MapChunk::requeueChunkUpdate(unsigned flags)
+{
+  // Upload-only: unlike registerChunkUpdate this does not invalidate the cached
+  // detail-doodad layout, so Chunk Mover selection/preview never counts as an edit.
+  _chunk_update_flags |= flags;
+  mt->registerChunkUpdate(flags);
+}
+
+void MapChunk::setChunkMoverOverlay(int value, bool force_upload)
+{
+  if (chunk_mover_overlay == value && !force_upload)
+    return;
+
+  chunk_mover_overlay = value;
+  // Upload-only: selecting a chunk must not mark its ADT as edited.
+  requeueChunkUpdate(ChunkUpdateFlags::FLAGS);
+}
+
+void MapChunk::setChunkMoverPreviewHeights(std::optional<std::array<float, mapbufsize>> heights)
+{
+  if (_chunk_mover_preview_heights == heights)
+    return;
+  _chunk_mover_preview_heights = std::move(heights);
+  requeueChunkUpdate(ChunkUpdateFlags::VERTEX);
+}
+
+void MapChunk::setChunkMoverPreviewNormals(
+    std::optional<std::array<glm::vec3, mapbufsize>> normals)
+{
+  if (_chunk_mover_preview_normals == normals)
+    return;
+
+  auto& tile_buffer = mt->getChunkHeightmapBuffer();
+  int const chunk_start = (px * 16 + py) * mapbufsize * 4;
+  if (normals && !_chunk_mover_preview_normals)
+  {
+    _chunk_mover_preview_original_normals.emplace();
+    for (int i = 0; i < mapbufsize; ++i)
+      (*_chunk_mover_preview_original_normals)[i] = {
+          tile_buffer[chunk_start + i * 4], tile_buffer[chunk_start + i * 4 + 1],
+          tile_buffer[chunk_start + i * 4 + 2]};
+  }
+  else if (!normals && _chunk_mover_preview_original_normals)
+  {
+    // Restore the CPU-side texture buffer immediately. Clipboard capture can
+    // happen before the renderer consumes the queued update.
+    for (int i = 0; i < mapbufsize; ++i)
+    {
+      tile_buffer[chunk_start + i * 4] = (*_chunk_mover_preview_original_normals)[i].x;
+      tile_buffer[chunk_start + i * 4 + 1] = (*_chunk_mover_preview_original_normals)[i].y;
+      tile_buffer[chunk_start + i * 4 + 2] = (*_chunk_mover_preview_original_normals)[i].z;
+    }
+    _chunk_mover_preview_original_normals.reset();
+  }
+  _chunk_mover_preview_normals = std::move(normals);
+  requeueChunkUpdate(ChunkUpdateFlags::NORMALS);
 }
 
 Noggit::ChunkDetailDoodads* MapChunk::getDetailDoodads()

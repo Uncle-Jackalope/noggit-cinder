@@ -657,6 +657,11 @@ void liquid_layer::update_min_max()
   // _chunk->update_layers();
 }
 
+void liquid_layer::refresh()
+{
+  update_min_max();
+}
+
 void liquid_layer::copy_subchunk_height(int x, int z, liquid_layer const& from)
 {
   int id = 9 * z + x;

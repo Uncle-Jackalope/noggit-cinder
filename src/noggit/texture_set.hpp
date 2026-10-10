@@ -62,9 +62,9 @@ public:
   int addTexture(scoped_blp_texture_reference texture);
   void eraseTexture(size_t id);
   void eraseTextures();
-  // Stamp/chunk-mover ghost preview: accepted no-op in Cinder (the Azure overlay renderer that
-  // consumes this isn't ported yet). Kept so the ported stamp tool compiles and runs 1:1.
-  void setChunkMoverTexturePreview(std::optional<chunk_mover_texture_preview>) {}
+  // Chunk Mover ghost preview: when set, the chunk renders the copied textures
+  // and alphamaps instead of its real ones, without mutating the ADT. (Azure port.)
+  void setChunkMoverTexturePreview(std::optional<chunk_mover_texture_preview> preview);
   // return true if at least 1 texture has been erased
   bool eraseUnusedTextures();
   void swap_layers(int layer_1, int layer_2);
@@ -137,6 +137,13 @@ public:
   void setNTextures(size_t n);;
   std::vector<scoped_blp_texture_reference>* getTextures();;
 
+  // Chunk Mover render accessors: return the ghost-preview data when a preview is
+  // installed, otherwise the real per-chunk data. The renderer uses these so the
+  // translucent ghost shows the copied textures/flags. (Ported from Noggit Azure.)
+  std::size_t renderTextureCount() const;
+  std::vector<scoped_blp_texture_reference>& renderTextures();
+  unsigned int renderTextureFlag(std::size_t id) const;
+
   // get the weight of each texture in a chunk unit
   std::array<float, 4> get_textures_weight_for_unit(unsigned int unit_x, unsigned int unit_y);
 
@@ -173,6 +180,9 @@ private:
   layer_info _layers_info[4];
 
   std::unique_ptr<tmp_edit_alpha_values> tmp_edit_values;
+
+  // Chunk Mover ghost preview (transient, viewport-only, never serialized).
+  std::optional<chunk_mover_texture_preview> _chunk_mover_texture_preview;
 
   bool _do_not_convert_alphamaps;
 

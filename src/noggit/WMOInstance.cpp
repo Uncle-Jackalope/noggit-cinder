@@ -86,6 +86,7 @@ WMOInstance::WMOInstance(WMOInstance&& other) noexcept
   dir = other.dir;
   _context = other._context;
   uid = other.uid;
+  chunk_mover_preview = other.chunk_mover_preview;
 
   _transform_mat = other._transform_mat;
   _transform_mat_inverted = other._transform_mat_inverted;
@@ -100,6 +101,7 @@ WMOInstance& WMOInstance::operator= (WMOInstance&& other) noexcept
   std::swap(dir, other.dir);
   std::swap(uid, other.uid);
   std::swap(scale, other.scale);
+  std::swap(chunk_mover_preview, other.chunk_mover_preview);
   std::swap(mFlags, other.mFlags);
   std::swap(mNameset, other.mNameset);
   std::swap(_doodadset, other._doodadset);

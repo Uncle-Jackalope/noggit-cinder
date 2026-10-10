@@ -612,6 +612,15 @@ bool MapIndex::tileLoaded(const TileIndex& tile) const
   return hasTile(tile) && mTiles[tile.z][tile.x].tile && mTiles[tile.z][tile.x].tile->finishedLoading();
 }
 
+bool MapIndex::hasTilesAwaitingLoading() const
+{
+  for (auto const& row : mTiles)
+    for (MapTileEntry const& entry : row)
+      if (entry.tile && !entry.tile->finishedLoading())
+        return true;
+  return false;
+}
+
 MapTile* MapIndex::getTile(const TileIndex& tile) const
 {
   return (tile.is_valid() ? mTiles[tile.z][tile.x].tile.get() : nullptr);

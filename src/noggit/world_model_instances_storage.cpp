@@ -14,6 +14,32 @@ namespace Noggit
 
   }
 
+  std::uint32_t world_model_instances_storage::new_preview_uid()
+  {
+    std::lock_guard<std::mutex> const lock(_mutex);
+    while (_next_preview_uid != 0 && unsafe_uid_is_used(_next_preview_uid))
+      --_next_preview_uid;
+    return _next_preview_uid--;
+  }
+
+  void world_model_instances_storage::delete_preview_instance(std::uint32_t uid)
+  {
+    std::unique_lock<std::mutex> const lock(_mutex);
+    auto instance = get_instance(uid, false);
+    if (!instance)
+      return;
+
+    SceneObject* object = std::get<selected_object_type>(*instance);
+    if (!object->chunk_mover_preview)
+      return;
+
+    // Viewport-only ghost: never recorded in actions or selection groups, so
+    // just drop it from storage without the usual world-update bookkeeping.
+    _instance_count_per_uid.erase(uid);
+    _m2s.erase(uid);
+    _wmos.erase(uid);
+  }
+
   std::uint32_t world_model_instances_storage::add_model_instance(ModelInstance instance, bool from_reloading, bool action)
   {
     std::uint32_t uid = instance.uid;
