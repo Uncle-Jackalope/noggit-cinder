@@ -2995,12 +2995,16 @@ void MapView::paintGL()
   {
     _uid_duplicate_warning_shown = true;
 
-    QMessageBox::critical( this
-        , "UID ALREADY IN USE"
-        , "Please enable 'Always check for max UID', mysql uid store or synchronize your "
-          "uid.ini file if you're sharing the map between several mappers.\n\n"
-          "Use 'Editor > Force uid check on next opening' to fix the issue."
-    );
+    // Not from inside paintGL: a modal box runs a nested event loop that repaints this widget mid-paint.
+    QTimer::singleShot(0, this, [this]
+    {
+      QMessageBox::critical( this
+          , "UID ALREADY IN USE"
+          , "Please enable 'Always check for max UID', mysql uid store or synchronize your "
+            "uid.ini file if you're sharing the map between several mappers.\n\n"
+            "Use 'Editor > Force uid check on next opening' to fix the issue."
+      );
+    });
   }
 
   FrameMark
