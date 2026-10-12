@@ -9,6 +9,7 @@
 #include <glm/gtx/euler_angles.hpp>
 #include <noggit/Misc.h>
 #include <math/trig.hpp>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -31,6 +32,16 @@ bool SceneObject::isInsideRect(std::array<glm::vec3, 2> const* rect) const
   return misc::rectOverlap(extents.data(), rect->data());
 }
 
+namespace
+{
+  // The same angle can be stored either side of the wrap, e.g. -60 and 300 degrees.
+  bool same_angle(float a, float b)
+  {
+    float const diff = std::fmod(std::abs(a - b), 360.f);
+    return std::min(diff, 360.f - diff) < 0.001f;
+  }
+}
+
 bool SceneObject::isDuplicateOf(SceneObject const& other)
 {
   auto a_obj_this = instance_model();
@@ -49,7 +60,9 @@ bool SceneObject::isDuplicateOf(SceneObject const& other)
   }
 
   return misc::vec3d_equals(pos, other.pos)
-         && misc::deg_vec3d_equals(dir, other.dir)
+         && same_angle(dir.x, other.dir.x)
+         && same_angle(dir.y, other.dir.y)
+         && same_angle(dir.z, other.dir.z)
          // Scale is stored on disk as uint16 / 1024. Tools that re-save one tile but not
          // its neighbour can round a shared border object one step differently, so two
          // copies one step apart are still the same placement.
