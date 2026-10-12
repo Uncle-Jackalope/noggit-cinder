@@ -618,11 +618,11 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
     }
 
     _chunk_instance_data[chunk_index].ChunkTextureSamplers[k] = sampler_id;
-    _chunk_instance_data[chunk_index].ChunkTextureArrayIDs[k] = (*chunk->texture_set->getTextures())[k]->is_specular() ? tex_index : -tex_index;
+    _chunk_instance_data[chunk_index].ChunkTextureArrayIDs[k] = chunk_textures[k]->is_specular() ? tex_index : -tex_index;
     
     if(modern_features && heightRef)
     {
-        GLuint hTex_array = (*chunk->texture_set->getTextures())[k]->getHeightMap()->texture_array();
+        GLuint hTex_array = chunk_textures[k]->getHeightMap()->texture_array();
 
         sampler_id = -1;
         for (int n = 0; n < draw_call.samplers.size(); ++n)
