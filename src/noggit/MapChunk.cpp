@@ -1494,9 +1494,11 @@ void MapChunk::save(util::sExtendableArray& lADTFile
 
   header_flags.flags.do_not_fix_alpha_map = use_mclq_liquids ? 0 : 1;
 
-  // vanilla (mclq-mode) output carries no MCCV chunk, so the header must not advertise one.
-  if (use_mclq_liquids)
-    header_flags.flags.has_mccv = 0;
+  // MCCV (terrain vertex shading) is a plain optional sub-chunk located via the
+  // MCNK header offsets, so it round-trips safely in vanilla (mclq-mode) output too:
+  // offset-based readers ignore ofsMCCV when they don't support it, and MCCV-aware
+  // clients (real Turtle, WotLK) render it. The flag is kept in sync with hasMCCV by
+  // initMCCV(), so we no longer force-clear it for vanilla saves.
 
   lMCNK_header->flags = header_flags;
   lMCNK_header->ix = px;
@@ -1570,9 +1572,11 @@ void MapChunk::save(util::sExtendableArray& lADTFile
   lCurrentPosition += 8 + lMCVT_Size;
   lMCNK_Size += 8 + lMCVT_Size;
 
-  // MCCV (vertex colours) — WotLK-only; skip it entirely for a vanilla (mclq-mode) save.
+  // MCCV (vertex colours / terrain shading) — written whenever the chunk has been
+  // painted, in both WotLK and vanilla (mclq-mode) output. Only chunks that were
+  // actually shaded (or loaded with MCCV) set hasMCCV, so unpainted tiles stay lean.
   int lMCCV_Size = 0;
-  if (hasMCCV && !use_mclq_liquids)
+  if (hasMCCV)
   {
     lMCCV_Size = mapbufsize * sizeof(unsigned int);
     lADTFile.Extend(8 + lMCCV_Size);
