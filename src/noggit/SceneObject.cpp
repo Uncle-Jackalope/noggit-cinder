@@ -40,6 +40,16 @@ namespace
     float const diff = std::fmod(std::abs(a - b), 360.f);
     return std::min(diff, 360.f - diff) < 0.001f;
   }
+
+  // Re-saving a tile can shift a shared border object by a few thousandths of a yard,
+  // mostly in height. 0.01 yards (about 1 cm) is well above that and well below any deliberate placement.
+  bool same_position(glm::vec3 const& a, glm::vec3 const& b)
+  {
+    float constexpr tolerance = 0.01f;
+    return std::abs(a.x - b.x) <= tolerance
+        && std::abs(a.y - b.y) <= tolerance
+        && std::abs(a.z - b.z) <= tolerance;
+  }
 }
 
 bool SceneObject::isDuplicateOf(SceneObject const& other)
@@ -59,7 +69,7 @@ bool SceneObject::isDuplicateOf(SceneObject const& other)
     return false;
   }
 
-  return misc::vec3d_equals(pos, other.pos)
+  return same_position(pos, other.pos)
          && same_angle(dir.x, other.dir.x)
          && same_angle(dir.y, other.dir.y)
          && same_angle(dir.z, other.dir.z)
