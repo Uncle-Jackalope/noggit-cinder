@@ -134,6 +134,10 @@ public:
   void refresh();
 
   ChunkWater* getChunk();
+  // Re-point the owning-chunk back-pointer. Needed when liquid_layers are copied
+  // into a chunk from elsewhere (undo/redo restore, Chunk Mover paste): the copies
+  // carry the SOURCE chunk's pointer, which may have been freed on a tile reload.
+  void setChunk(ChunkWater* chunk) { _chunk = chunk; }
 
   bool has_fatigue() const;
   // Stop recomputing the ocean-fatigue optimisation after a manual attribute edit,

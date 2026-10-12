@@ -587,6 +587,12 @@ ChunkWaterState ChunkWater::getState() const
 void ChunkWater::restoreState(ChunkWaterState const& state)
 {
   _layers = state.layers;
+  // The copied layers carry the ChunkWater back-pointer from when the state was
+  // captured, which may be a now-freed ChunkWater if the tile was unloaded and
+  // reloaded in between. Re-point every layer at this chunk before anything
+  // dereferences it (use-after-free -> poisoned Qt object otherwise).
+  for (auto& layer : _layers)
+    layer.setChunk(this);
   attributes = state.attributes;
 
   // Rebuild render/extents data without replacing the restored masks.
@@ -803,6 +809,12 @@ std::vector<liquid_layer>* ChunkWater::getRenderLayers()
 void ChunkWater::setChunkMoverLiquidPreview(std::optional<std::vector<liquid_layer>> layers)
 {
   _chunk_mover_preview_layers = std::move(layers);
+  // Preview layers are built from the SOURCE chunks, so their back-pointer points
+  // elsewhere; re-point at this chunk (the one rendering the ghost) so nothing
+  // dereferences a source chunk that may since have unloaded.
+  if (_chunk_mover_preview_layers)
+    for (auto& layer : *_chunk_mover_preview_layers)
+      layer.setChunk(this);
   tagUpdate();
 }
 
