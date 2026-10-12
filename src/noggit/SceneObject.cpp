@@ -9,6 +9,7 @@
 #include <glm/gtx/euler_angles.hpp>
 #include <noggit/Misc.h>
 #include <math/trig.hpp>
+#include <cmath>
 #include <limits>
 
 SceneObject::SceneObject(SceneObjectTypes type, Noggit::NoggitRenderContext context)
@@ -49,7 +50,10 @@ bool SceneObject::isDuplicateOf(SceneObject const& other)
 
   return misc::vec3d_equals(pos, other.pos)
          && misc::deg_vec3d_equals(dir, other.dir)
-         && misc::float_equals(scale, other.scale);
+         // Scale is stored on disk as uint16 / 1024. Tools that re-save one tile but not
+         // its neighbour can round a shared border object one step differently, so two
+         // copies one step apart are still the same placement.
+         && std::abs(scale - other.scale) <= min_scale() * 1.5f;
 }
 
 void SceneObject::updateTransformMatrix()
