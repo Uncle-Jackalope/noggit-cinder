@@ -9,6 +9,8 @@
 #include <glm/gtx/euler_angles.hpp>
 #include <noggit/Misc.h>
 #include <math/trig.hpp>
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 SceneObject::SceneObject(SceneObjectTypes type, Noggit::NoggitRenderContext context)
@@ -30,6 +32,26 @@ bool SceneObject::isInsideRect(std::array<glm::vec3, 2> const* rect) const
   return misc::rectOverlap(extents.data(), rect->data());
 }
 
+namespace
+{
+  // The same angle can be stored either side of the wrap, e.g. -60 and 300 degrees.
+  bool same_angle(float a, float b)
+  {
+    float const diff = std::fmod(std::abs(a - b), 360.f);
+    return std::min(diff, 360.f - diff) < 0.001f;
+  }
+
+  // Re-saving a tile can shift a shared border object by a few thousandths of a yard,
+  // mostly in height. 0.01 yards (about 1 cm) is well above that and well below any deliberate placement.
+  bool same_position(glm::vec3 const& a, glm::vec3 const& b)
+  {
+    float constexpr tolerance = 0.01f;
+    return std::abs(a.x - b.x) <= tolerance
+        && std::abs(a.y - b.y) <= tolerance
+        && std::abs(a.z - b.z) <= tolerance;
+  }
+}
+
 bool SceneObject::isDuplicateOf(SceneObject const& other)
 {
   auto a_obj_this = instance_model();
@@ -47,9 +69,14 @@ bool SceneObject::isDuplicateOf(SceneObject const& other)
     return false;
   }
 
-  return misc::vec3d_equals(pos, other.pos)
-         && misc::deg_vec3d_equals(dir, other.dir)
-         && misc::float_equals(scale, other.scale);
+  return same_position(pos, other.pos)
+         && same_angle(dir.x, other.dir.x)
+         && same_angle(dir.y, other.dir.y)
+         && same_angle(dir.z, other.dir.z)
+         // Scale is stored on disk as uint16 / 1024. Tools that re-save one tile but not
+         // its neighbour can round a shared border object one step differently, so two
+         // copies one step apart are still the same placement.
+         && std::abs(scale - other.scale) <= min_scale() * 1.5f;
 }
 
 void SceneObject::updateTransformMatrix()
